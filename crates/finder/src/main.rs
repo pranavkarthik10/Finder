@@ -11,7 +11,7 @@ mod ops;
 mod text_input;
 mod theme;
 
-use browser::{Browser, Collapse, ContextMenu, CopyFiles, CopyPath, CutFiles, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, PasteFiles, Rename, SelectAll, SelectNext, SelectPrev, Trash};
+use browser::{Browser, Collapse, ContextMenu, CopyFiles, CopyPath, CutFiles, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, PasteFiles, Rename, SelectAll, SelectNext, SelectPrev, Trash, UndoOp};
 use gpui::{
     App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
@@ -47,6 +47,7 @@ fn main() {
             KeyBinding::new("ctrl-v", PasteFiles, Some("Browser")),
             KeyBinding::new("ctrl-alt-c", CopyPath, Some("Browser")),
             KeyBinding::new("shift-f10", ContextMenu, Some("Browser")),
+            KeyBinding::new("ctrl-z", UndoOp, Some("Browser")),
             KeyBinding::new("enter", text_input::Confirm, Some("TextInput")),
             KeyBinding::new("escape", text_input::Cancel, Some("TextInput")),
             // The search field (Ctrl stands in for Command).
@@ -86,17 +87,25 @@ fn main() {
                 },
             )
             .expect("open window");
-        // FINDER_ACTIONS="finder::NewFolder,..." dispatches actions at
-        // startup (testing without driving the keyboard).
+        // FINDER_ACTIONS="finder::Trash,wait:500,finder::UndoOp" dispatches
+        // actions at startup, with pauses (testing without the keyboard).
         if let Ok(list) = std::env::var("FINDER_ACTIONS") {
-            for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-                match cx.build_action(name, None) {
-                    Ok(action) => {
-                        let _ = window.update(cx, |_, window, cx| window.dispatch_action(action, cx));
+            let steps: Vec<String> = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            cx.spawn(async move |cx| {
+                for step in steps {
+                    if let Some(ms) = step.strip_prefix("wait:").and_then(|m| m.parse().ok()) {
+                        cx.background_executor().timer(std::time::Duration::from_millis(ms)).await;
+                        continue;
                     }
-                    Err(e) => eprintln!("FINDER_ACTIONS: {name}: {e}"),
+                    let _ = cx.update(|cx| match cx.build_action(&step, None) {
+                        Ok(action) => {
+                            let _ = window.update(cx, |_, window, cx| window.dispatch_action(action, cx));
+                        }
+                        Err(e) => eprintln!("FINDER_ACTIONS: {step}: {e}"),
+                    });
                 }
-            }
+            })
+            .detach();
         }
         cx.activate(true);
     });

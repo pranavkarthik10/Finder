@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp]
 );
 
 /// Most results a search shows.
@@ -98,6 +98,19 @@ pub struct Browser {
     /// The last operation's failure, shown in the status bar.
     notice: Option<String>,
     menu: Option<menu::Menu>,
+    /// What Ctrl+Z reverses, newest last.
+    undo: Vec<Undo>,
+}
+
+/// How to reverse a file operation.
+enum Undo {
+    Rename { from: PathBuf, to: PathBuf },
+    /// Made by us: back to the Recycle Bin.
+    Created(Vec<PathBuf>),
+    /// (where it is now, where it was).
+    Moved(Vec<(PathBuf, PathBuf)>),
+    /// Back out of the Recycle Bin.
+    Trashed(Vec<PathBuf>),
 }
 
 struct Renaming {
@@ -200,6 +213,7 @@ impl Browser {
             renaming: None,
             notice: None,
             menu: None,
+            undo: Vec::new(),
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Cancelled, cx| this.end_search(cx)).detach();
@@ -460,16 +474,52 @@ impl Browser {
 
     /// Run `op` off the UI thread (shell operations show their own
     /// progress and prompts), then refresh selecting `after`.
-    fn run_op(&mut self, op: impl FnOnce() -> Result<(), String> + Send + 'static, after: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn run_op(&mut self, op: impl FnOnce() -> Result<(), String> + Send + 'static, after: Vec<PathBuf>, undo: Option<Undo>, cx: &mut Context<Self>) {
         self.notice = None;
         cx.spawn(async move |this, cx| {
             let res = cx.background_spawn(async move { op() }).await;
             let _ = this.update(cx, |b, cx| {
-                b.notice = res.err();
+                match res {
+                    Ok(()) => b.undo.extend(undo),
+                    Err(e) => b.notice = Some(e),
+                }
                 b.refresh(&after, cx);
             });
         })
         .detach();
+    }
+
+    /// Reverse the last operation.
+    fn undo_op(&mut self, _: &UndoOp, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let Some(u) = self.undo.pop() else { return };
+        match u {
+            Undo::Rename { from, to } => {
+                let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.run_op(move || ops::rename(&to, &name).map(|_| ()), vec![from], None, cx);
+            }
+            Undo::Created(paths) => self.run_op(move || ops::run(ops::Op::Recycle, &paths, None), Vec::new(), None, cx),
+            Undo::Moved(pairs) => {
+                let back: Vec<PathBuf> = pairs.iter().map(|(_, was)| was.clone()).collect();
+                self.run_op(
+                    move || {
+                        for (now, was) in &pairs {
+                            ops::run(ops::Op::Move, std::slice::from_ref(now), was.parent())?;
+                        }
+                        Ok(())
+                    },
+                    back,
+                    None,
+                    cx,
+                );
+            }
+            Undo::Trashed(paths) => {
+                let back = paths.clone();
+                self.run_op(move || ops::restore(&paths), back, None, cx);
+            }
+        }
     }
 
     fn copy_files(&mut self, _: &CopyFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -504,6 +554,7 @@ impl Browser {
         }
         let copies: Vec<PathBuf> = if cut { Vec::new() } else { same.iter().map(|p| ops::copy_name(p)).collect() };
         let mut after: Vec<PathBuf> = other.iter().filter_map(|p| p.file_name().map(|n| dir.join(n))).collect();
+        let undo = if cut { Undo::Moved(after.iter().cloned().zip(other.iter().cloned()).collect()) } else { Undo::Created(after.iter().chain(&copies).cloned().collect()) };
         after.extend(copies.iter().cloned());
         self.run_op(
             move || {
@@ -517,6 +568,7 @@ impl Browser {
                 Ok(())
             },
             after,
+            Some(undo),
             cx,
         );
     }
@@ -541,7 +593,8 @@ impl Browser {
         }
         // Land on the row after the last one removed.
         let next = self.selected.and_then(|i| self.rows.iter().skip(i).find(|r| !paths.contains(&r.entry.path))).map(|r| r.entry.path.clone());
-        self.run_op(move || ops::run(ops::Op::Recycle, &paths, None), next.into_iter().collect(), cx);
+        let undo = Undo::Trashed(paths.clone());
+        self.run_op(move || ops::run(ops::Op::Recycle, &paths, None), next.into_iter().collect(), Some(undo), cx);
     }
 
     fn duplicate(&mut self, _: &Duplicate, window: &mut Window, cx: &mut Context<Self>) {
@@ -554,7 +607,8 @@ impl Browser {
             return;
         }
         let after = to.clone();
-        self.run_op(move || ops::copy_as(&from, &to), after, cx);
+        let undo = Undo::Created(to.clone());
+        self.run_op(move || ops::copy_as(&from, &to), after, Some(undo), cx);
     }
 
     fn new_folder(&mut self, _: &NewFolder, window: &mut Window, cx: &mut Context<Self>) {
@@ -563,6 +617,7 @@ impl Browser {
         }
         match ops::new_folder(&self.current) {
             Ok(p) => {
+                self.undo.push(Undo::Created(vec![p.clone()]));
                 self.refresh(std::slice::from_ref(&p), cx);
                 self.start_rename(p, window, cx);
             }
@@ -618,6 +673,7 @@ impl Browser {
         match ops::rename(&r.path, &name) {
             Ok(to) => {
                 self.notice = None;
+                self.undo.push(Undo::Rename { from: r.path.clone(), to: to.clone() });
                 self.refresh(&[to], cx);
             }
             Err(e) => {
@@ -1531,6 +1587,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::show_columns))
             .on_action(cx.listener(Self::show_gallery))
             .on_action(cx.listener(Self::context_menu_key))
+            .on_action(cx.listener(Self::undo_op))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))

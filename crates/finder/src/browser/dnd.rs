@@ -64,9 +64,10 @@ impl Browser {
         let Some(first) = paths.first() else { return };
         let m = window.modifiers();
         let copy = m.control || m.alt || !same_volume(first, &dest);
-        let after: Vec<PathBuf> =
-            if dest == self.current { paths.iter().filter_map(|p| p.file_name().map(|n| dest.join(n))).collect() } else { Vec::new() };
-        self.run_op(move || ops::run(if copy { ops::Op::Copy } else { ops::Op::Move }, &paths, Some(&dest)), after, cx);
+        let landed: Vec<PathBuf> = paths.iter().filter_map(|p| p.file_name().map(|n| dest.join(n))).collect();
+        let undo = if copy { Undo::Created(landed.clone()) } else { Undo::Moved(landed.iter().cloned().zip(paths.iter().cloned()).collect()) };
+        let after = if dest == self.current { landed } else { Vec::new() };
+        self.run_op(move || ops::run(if copy { ops::Op::Copy } else { ops::Op::Move }, &paths, Some(&dest)), after, Some(undo), cx);
     }
 }
 

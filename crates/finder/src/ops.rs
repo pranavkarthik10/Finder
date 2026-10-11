@@ -103,9 +103,65 @@ pub fn rename(from: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(to)
 }
 
+/// Put recycled items back where they were: the newest of each in this
+/// user's Recycle Bin. Each deleted item is a `$R...` file (its content)
+/// beside a `$I...` record: version, size, deletion time, then the
+/// original path. Restoring moves the content back and drops the record,
+/// as Explorer's Put Back does.
+pub fn restore(paths: &[PathBuf]) -> Result<(), String> {
+    for p in paths {
+        let Some(root) = p.components().next() else { continue };
+        let bin = PathBuf::from(format!("{}\\$Recycle.Bin", root.as_os_str().to_string_lossy()));
+        // Only our own (per-user) folder in it is readable.
+        let mut best: Option<(u64, PathBuf)> = None;
+        for dir in std::fs::read_dir(&bin).into_iter().flatten().flatten() {
+            let Ok(items) = std::fs::read_dir(dir.path()) else { continue };
+            for item in items.flatten() {
+                if !item.file_name().to_string_lossy().starts_with("$I") {
+                    continue;
+                }
+                let Ok(b) = std::fs::read(item.path()) else { continue };
+                if b.len() < 28 || b[0] != 2 {
+                    continue;
+                }
+                let when = u64::from_le_bytes(b[16..24].try_into().unwrap());
+                let chars = u32::from_le_bytes(b[24..28].try_into().unwrap()) as usize;
+                let wide: Vec<u16> =
+                    b[28..].chunks_exact(2).take(chars).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+                let orig = String::from_utf16_lossy(&wide);
+                if orig.eq_ignore_ascii_case(&p.to_string_lossy()) && best.as_ref().is_none_or(|(t, _)| when > *t) {
+                    best = Some((when, item.path()));
+                }
+            }
+        }
+        let Some((_, record)) = best else { return Err(format!("\u{201c}{}\u{201d} isn't in the Recycle Bin.", p.display())) };
+        let content = record.with_file_name(record.file_name().unwrap().to_string_lossy().replacen("$I", "$R", 1));
+        if p.exists() {
+            return Err(format!("\u{201c}{}\u{201d} already exists.", p.display()));
+        }
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&content, p).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&record);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recycle_and_restore() {
+        let d = scratch("restore");
+        let f = d.join("restore-me.txt");
+        std::fs::write(&f, "back").unwrap();
+        run(Op::Recycle, std::slice::from_ref(&f), None).unwrap();
+        assert!(!f.exists());
+        restore(std::slice::from_ref(&f)).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "back");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join("finder-ops-tests").join(name);
