@@ -67,6 +67,9 @@ pub struct Browser {
     search: Option<Search>,
     /// Bumped per query; results of older ones are dropped.
     search_gen: u64,
+    /// Filters typed into the field, shown as chips before the text:
+    /// (key, value) as in `ext:pdf`.
+    chips: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -151,9 +154,21 @@ impl Browser {
             engine: fsearch::Engine::start(fsearch::Options { dir: fsearch::sys::data_dir(), home: fsearch::sys::home(), skip: None }).ok(),
             search: None,
             search_gen: 0,
+            chips: Vec::new(),
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
+        cx.subscribe(&b.search_input, |this, _, _: &text_input::BackspaceAtStart, cx| {
+            if this.chips.pop().is_some() {
+                this.query_changed(cx);
+            }
+        })
+        .detach();
         b.load(if start.is_dir() { start } else { home() });
+        // FINDER_SEARCH="..." types a search at startup (for testing
+        // without driving the keyboard).
+        if let Ok(q) = std::env::var("FINDER_SEARCH") {
+            b.search_input.update(cx, |i, cx| i.set_text(q, cx));
+        }
         b
     }
 
@@ -311,7 +326,20 @@ impl Browser {
     // Search
 
     fn query_changed(&mut self, cx: &mut Context<Self>) {
-        let text = self.search_input.read(cx).text().trim().to_string();
+        // A filter followed by a space becomes a chip.
+        let raw = self.search_input.read(cx).text().to_string();
+        let mut words: Vec<&str> = raw.split(' ').collect();
+        let open = words.pop().unwrap_or_default();
+        let (filters, rest): (Vec<&str>, Vec<&str>) = words.into_iter().filter(|w| !w.is_empty()).partition(|w| chip_of(w).is_some());
+        if !filters.is_empty() {
+            self.chips.extend(filters.iter().filter_map(|w| chip_of(w)));
+            let left = rest.into_iter().chain([open]).collect::<Vec<_>>().join(" ");
+            // Re-enters with the filters gone.
+            self.search_input.update(cx, |i, cx| i.set_text(left, cx));
+            return;
+        }
+        let typed = raw.trim();
+        let text = self.chips.iter().map(|(k, v)| format!("{k}:{v}")).chain((!typed.is_empty()).then(|| typed.to_string())).collect::<Vec<_>>().join(" ");
         if text.is_empty() {
             if self.search.take().is_some() {
                 let cur = self.current.clone();
@@ -337,6 +365,8 @@ impl Browser {
             }
         };
         q.limit = SEARCH_LIMIT;
+        // Finder shows nothing rather than letters scattered across a name.
+        q.min_quality(12);
         if s.scope == Scope::Folder {
             q.scope = Some(fsearch::sys::index_path(&s.root));
         }
@@ -401,13 +431,13 @@ impl Browser {
             && s.scope != scope
         {
             s.scope = scope;
-            let text = self.search_input.read(cx).text().trim().to_string();
-            self.run_search(text, cx);
+            self.query_changed(cx);
         }
     }
 
     /// Leave search: clear the field, back to the folder.
     fn end_search(&mut self, cx: &mut Context<Self>) {
+        self.chips.clear();
         if self.search.take().is_some() {
             self.search_gen += 1;
             self.search_input.update(cx, |i, cx| i.set_text("", cx));
@@ -484,6 +514,40 @@ impl Browser {
     }
 }
 
+
+/// `ext:pdf` and the like: a filter the field shows as a chip.
+fn chip_of(word: &str) -> Option<(String, String)> {
+    let (k, v) = word.split_once(':')?;
+    let k = k.to_ascii_lowercase();
+    let known = ["ext", "kind", "type", "size", "mtime", "modified", "in"];
+    (known.contains(&k.as_str()) && !v.is_empty()).then(|| (k, v.to_string()))
+}
+
+/// How a chip reads: Finder's attribute name, then the value in words.
+fn chip_label(k: &str, v: &str) -> (&'static str, String) {
+    match k {
+        "ext" => ("KIND", v.split(',').map(|e| files::kind_of(&format!("x.{e}"), false)).collect::<Vec<_>>().join(", ")),
+        "kind" => (
+            "KIND",
+            match v {
+                "dir" | "folder" | "d" => "Folder".into(),
+                "file" | "f" => "Document".into(),
+                "link" | "symlink" | "l" => "Alias".into(),
+                v => v.into(),
+            },
+        ),
+        "type" => ("KIND", capitalize(v)),
+        "size" => ("SIZE", v.replace('>', "> ").replace('<', "< ").to_uppercase()),
+        "mtime" | "modified" => ("MODIFIED", v.replace('<', "within ").replace('>', "before ")),
+        "in" => ("IN", v.into()),
+        _ => ("", v.into()),
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
 
 // Pieces
 
@@ -691,7 +755,7 @@ impl Browser {
     /// The inspector column's own strip of toolbar: the search field.
     fn search_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.search_input.focus_handle(cx).is_focused(window);
-        let has_text = !self.search_input.read(cx).text().is_empty();
+        let has_text = !self.search_input.read(cx).text().is_empty() || !self.chips.is_empty();
         div().h(px(t::TOOLBAR_H)).flex_none().flex().items_center().px(px(12.)).window_control_area(WindowControlArea::Drag).child(
             capsule("search")
                 .flex_1()
@@ -699,6 +763,22 @@ impl Browser {
                 .gap(px(5.))
                 .when(focused, |d| d.border_2().border_color(t::focus_ring()))
                 .child(sym("magnifyingglass", 13., t::text_secondary()))
+                .children(self.chips.iter().enumerate().map(|(i, (k, v))| {
+                    let (label, value) = chip_label(k, v);
+                    div()
+                        .id(("chip", i))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(5.))
+                        .bg(t::glass_pressed())
+                        .text_size(px(t::SMALL_SIZE))
+                        .child(div().text_size(px(9.)).font_weight(gpui::FontWeight::BOLD).text_color(t::text_secondary()).child(label))
+                        .child(div().text_color(t::text()).child(value))
+                }))
                 .child(self.search_input.clone())
                 .when(has_text, |d| {
                     d.child(

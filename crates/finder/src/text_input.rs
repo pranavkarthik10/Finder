@@ -33,6 +33,9 @@ actions!(
 /// The text changed.
 pub struct Changed;
 
+/// Backspace with the cursor at the start: nothing of ours to delete.
+pub struct BackspaceAtStart;
+
 pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -46,6 +49,7 @@ pub struct TextInput {
 }
 
 impl gpui::EventEmitter<Changed> for TextInput {}
+impl gpui::EventEmitter<BackspaceAtStart> for TextInput {}
 
 impl TextInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> TextInput {
@@ -116,7 +120,7 @@ impl TextInput {
         if self.selected_range.is_empty() {
             let prev = self.previous_boundary(self.cursor_offset());
             if self.cursor_offset() == prev {
-                window.play_system_bell();
+                cx.emit(BackspaceAtStart);
                 return;
             }
             self.select_to(prev, cx)

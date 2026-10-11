@@ -171,6 +171,9 @@ fn bench(qs: &str) {
     let live = live::Live::new(idx);
     let home = home();
     let mut q = query::Query::parse(qs, &home).unwrap_or_else(|e| die(&e));
+    if let Some(n) = std::env::var("FSEARCH_MIN_QUALITY").ok().and_then(|v| v.parse().ok()) {
+        q.min_quality(n);
+    }
     // Like the daemon: a content search when the query has a pattern, on
     // user-interactive threads, paths included.
     let grep = q.grep.take().map(|p| fsearch::Grep::new(&p, q.grep_mode).unwrap_or_else(|e| die(&e)));

@@ -25,6 +25,9 @@ pub struct Token {
     pub loose: u64,
     /// `index::start_bit` of the first letter when the token takes typos.
     pub start: u64,
+    /// Fuzzy matches scoring below this are no match (0: any subsequence
+    /// matches). See `Query::min_quality`.
+    pub floor: i32,
 }
 
 impl Token {
@@ -43,7 +46,7 @@ impl Token {
     /// A token for a lowercase literal a name must contain.
     fn literal(text: Vec<u8>) -> Token {
         let mask = text.iter().fold(0, |m, &b| m | char_bit(b));
-        Token { text, mask, mode: Mode::Exact, negate: false, loose: 0, start: 0 }
+        Token { text, mask, mode: Mode::Exact, negate: false, loose: 0, start: 0, floor: 0 }
     }
 
     /// A stand-in for a name's mask (see `token_score`) from what the name
@@ -290,6 +293,16 @@ impl Query {
     /// Parse the human query language. Plain words are fuzzy tokens;
     /// `'x` exact, `^x` prefix, `x$` suffix, `!x` negate; filters are
     /// `ext: type: kind: in: size: mtime: re: path: limit: grep: regex: sym:`.
+    /// Drop weak fuzzy matches: a word's letters scattered across a name
+    /// (`main.rs` in `https+++www.google.com^partitionKey=...`) score ~7-9
+    /// per query letter; abbreviations and typos that people mean score 13
+    /// and up (`fndrsrch` in `FinderSearch` 18.6). `per_char` 12 keeps those.
+    pub fn min_quality(&mut self, per_char: i32) {
+        for t in &mut self.tokens {
+            t.floor = per_char * t.text.len() as i32;
+        }
+    }
+
     pub fn parse(s: &str, home: &str) -> Result<Query, String> {
         let mut q = Query { size: (0, u64::MAX), mtime: (0, u32::MAX), limit: 50, ..Default::default() };
         for word in split_words(s) {
@@ -324,7 +337,7 @@ impl Query {
         let text: Vec<u8> = t.bytes().map(|b| b.to_ascii_lowercase()).collect();
         let mask = text.iter().fold(0, |m, &b| m | char_bit(b));
         let (loose, start) = if takes_typos(&text, mode) { (mask & !char_bit(text[0]), start_bit(text[0])) } else { (0, 0) };
-        self.tokens.push(Token { text, mask, mode, negate, loose, start });
+        self.tokens.push(Token { text, mask, mode, negate, loose, start, floor: 0 });
     }
 
     /// Apply filter `k:v`; false if `k` is not a filter name.
@@ -933,9 +946,9 @@ fn token_score(name: &[u8], wide: Wide, m: u64, t: &Token) -> Option<i32> {
     match t.mode {
         Mode::Fuzzy if takes_typos(&t.text, t.mode) => {
             let clean = if t.mask & !m == 0 { fuzzy_score_capped(name, wide, &t.text, 100) } else { None };
-            clean.max(if m & t.start != 0 { typo_score(name, wide, m, &t.text) } else { None })
+            clean.max(if m & t.start != 0 { typo_score(name, wide, m, &t.text) } else { None }).filter(|&s| s >= t.floor)
         }
-        Mode::Fuzzy => fuzzy_score_capped(name, wide, &t.text, 100),
+        Mode::Fuzzy => fuzzy_score_capped(name, wide, &t.text, 100).filter(|&s| s >= t.floor),
         Mode::Exact => find_ci(name, &t.text).map(|p| 40 + if p == 0 { 30 } else { 0 } - (name.len() as i32).min(80) / 3),
         Mode::Prefix => {
             (name.len() >= t.text.len() && name.iter().zip(&t.text).all(|(&a, &b)| fold(a) == b)).then(|| 60 - (name.len() as i32).min(80) / 3)

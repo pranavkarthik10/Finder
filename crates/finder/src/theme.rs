@@ -26,7 +26,7 @@ pub fn ui_font(installed: &[String]) -> &'static str {
 }
 
 // Window
-pub const WINDOW_W: f32 = 1180.;
+pub const WINDOW_W: f32 = 1280.;
 pub const WINDOW_H: f32 = 720.;
 pub const WINDOW_MIN_W: f32 = 760.;
 pub const WINDOW_MIN_H: f32 = 420.;
@@ -91,7 +91,7 @@ pub const INDENT: f32 = 18.;
 pub const HEADER_H: f32 = 28.;
 pub const PATH_BAR_H: f32 = 26.;
 pub const STATUS_BAR_H: f32 = 26.;
-pub const INSPECTOR_W: f32 = 320.;
+pub const INSPECTOR_W: f32 = 300.;
 pub const DATE_W: f32 = 200.;
 pub const SIZE_W: f32 = 80.;
 pub const KIND_W: f32 = 140.;
