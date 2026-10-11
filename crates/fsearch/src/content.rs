@@ -2608,6 +2608,32 @@ fn find_folded(hay: &[u8], from: usize, needle: &[u8], pair: (usize, usize)) -> 
             i += 16;
         }
     }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // Safety: every load reads 32 bytes at i + pair.1 at most, and the loop
+    // keeps i + 32 <= last + 1, so they end by hay.len().
+    unsafe {
+        use std::arch::x86_64::*;
+        let (c1, c2) = (needle[pair.0], needle[pair.1]);
+        let case = |c: u8| _mm256_set1_epi8(if c.is_ascii_lowercase() { 0x20 } else { 0 });
+        let (v1, v2, m1, m2) = (_mm256_set1_epi8(c1 as i8), _mm256_set1_epi8(c2 as i8), case(c1), case(c2));
+        while i + 32 <= last + 1 {
+            let p = hay.as_ptr().add(i);
+            let ld = |o: usize| _mm256_loadu_si256(p.add(o).cast());
+            let eq = _mm256_and_si256(
+                _mm256_cmpeq_epi8(_mm256_or_si256(ld(pair.0), m1), v1),
+                _mm256_cmpeq_epi8(_mm256_or_si256(ld(pair.1), m2), v2),
+            );
+            let mut bits = _mm256_movemask_epi8(eq) as u32;
+            while bits != 0 {
+                let c = i + bits.trailing_zeros() as usize;
+                if at(c) {
+                    return Some(c);
+                }
+                bits &= bits - 1;
+            }
+            i += 32;
+        }
+    }
     (i..=last).find(|&c| at(c))
 }
 

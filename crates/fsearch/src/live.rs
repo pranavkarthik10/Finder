@@ -499,10 +499,30 @@ fn subtree_bounds(path: &[u8]) -> (Vec<u8>, Vec<u8>) {
 #[cfg(windows)]
 pub fn lstat(path: &[u8]) -> Option<OEnt> {
     use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA};
     if path == b"/" {
         return Some(OEnt::new(path, KIND_DIR, 0, 0));
     }
-    let m = std::fs::symlink_metadata(crate::sys::os_path(path)).ok()?;
+    let os = crate::sys::os_path(path);
+    // One call, no handle opened: ~10x cheaper than a metadata() round trip,
+    // and a relist after lost events checks every folder this way.
+    let w: Vec<u16> = r"\\?\".encode_utf16().chain(os.to_string_lossy().encode_utf16()).chain([0]).collect();
+    let mut d: WIN32_FILE_ATTRIBUTE_DATA = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileAttributesExW(w.as_ptr(), GetFileExInfoStandard, (&raw mut d).cast()) } == 0 {
+        return None;
+    }
+    if d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        let dir = d.dwFileAttributes & 0x10 != 0;
+        let mut kind = if dir { KIND_DIR } else { walk::KIND_FILE };
+        if d.dwFileAttributes & 0x2 != 0 {
+            kind |= walk::FLAG_HIDDEN;
+        }
+        let size = if dir { 0 } else { (d.nFileSizeHigh as u64) << 32 | d.nFileSizeLow as u64 };
+        let ft = (d.ftLastWriteTime.dwHighDateTime as i64) << 32 | d.ftLastWriteTime.dwLowDateTime as i64;
+        return Some(OEnt::new(path, kind, size, crate::sys::filetime_secs(ft)));
+    }
+    // A reparse point: whether it is a link depends on its tag.
+    let m = std::fs::symlink_metadata(os).ok()?;
     // Junctions and symlinks (name surrogates) are links, like in a scan.
     let mut kind = if m.file_type().is_symlink() {
         walk::KIND_LINK

@@ -646,9 +646,9 @@ fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32
     if let Some(s) = prefix_score(name, q, cap) {
         return Some(s);
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx2"))))]
     let _ = wide;
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx2")))]
     if name.len() <= 64 && q.len() <= 32 {
         if let Some(w) = wide {
             return fuzzy_masked(name, w, q, cap);
@@ -669,14 +669,12 @@ fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32
     fuzzy_from(name, q, cap, end, next, |k, to| rfind_folded(&name[..to], q[k]))
 }
 
-/// `fuzzy_score_capped` past the prefix test, for a name of at most 64
-/// bytes starting `src`: each query byte's places in the name as one
-/// 64-bit mask (NEON compares over the whole name at once) stand in for
-/// memchr's scans, which cost several times more per name tried.
+/// The 64 bytes at `src`, ASCII-folded, as a function from a (folded) byte
+/// to the mask of its places: bit p set when byte p is it.
 #[cfg(target_arch = "aarch64")]
-fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> {
+#[inline(always)]
+fn places_of(src: &[u8; 64]) -> impl Fn(u8) -> u64 {
     use std::arch::aarch64::*;
-    let valid = u64::MAX.checked_shr(64 - name.len() as u32).unwrap_or(0);
     // Safety (here and below): NEON is part of aarch64; loads stay in `src`.
     let v: [uint8x16_t; 4] = std::array::from_fn(|i| unsafe {
         let x = vld1q_u8(src.as_ptr().add(16 * i));
@@ -686,12 +684,45 @@ fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> 
     // the 64 compares into 64 bits, position p in bit p.
     const W: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
     let weight = unsafe { vld1q_u8(W.as_ptr()) };
-    let places = |c: u8| unsafe {
+    move |c: u8| unsafe {
         let c = vdupq_n_u8(c);
         let m = |i: usize| vandq_u8(vceqq_u8(v[i], c), weight);
         let s = vpaddq_u8(vpaddq_u8(m(0), m(1)), vpaddq_u8(m(2), m(3)));
-        vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0) & valid
-    };
+        vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0)
+    }
+}
+
+/// `places_of` with AVX2: two 32-byte compares, movemask packs them.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline(always)]
+fn places_of(src: &[u8; 64]) -> impl Fn(u8) -> u64 {
+    use std::arch::x86_64::*;
+    // Safety (here and below): AVX2 is enabled at compile time; the loads
+    // stay in `src`.
+    let v: [__m256i; 2] = std::array::from_fn(|i| unsafe {
+        let x = _mm256_loadu_si256(src.as_ptr().add(32 * i).cast());
+        // Upper case is x - 'A' <= 25 (unsigned): min(t, 25) == t.
+        let t = _mm256_sub_epi8(x, _mm256_set1_epi8(b'A' as i8));
+        let upper = _mm256_cmpeq_epi8(_mm256_min_epu8(t, _mm256_set1_epi8(25)), t);
+        _mm256_or_si256(x, _mm256_and_si256(upper, _mm256_set1_epi8(0x20)))
+    });
+    move |c: u8| unsafe {
+        let c = _mm256_set1_epi8(c as i8);
+        let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v[0], c)) as u32 as u64;
+        let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v[1], c)) as u32 as u64;
+        lo | hi << 32
+    }
+}
+
+/// `fuzzy_score_capped` past the prefix test, for a name of at most 64
+/// bytes starting `src`: each query byte's places in the name as one
+/// 64-bit mask (SIMD compares over the whole name at once) stand in for
+/// memchr's scans, which cost several times more per name tried.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx2")))]
+fn fuzzy_masked(name: &[u8], src: &[u8; 64], q: &[u8], cap: i32) -> Option<i32> {
+    let valid = u64::MAX.checked_shr(64 - name.len() as u32).unwrap_or(0);
+    let of = places_of(src);
+    let places = |c: u8| of(c) & valid;
     let mut masks = [0u64; 32];
     let (mut end, mut from) = (0, 0);
     for i in 0..q.len() {
