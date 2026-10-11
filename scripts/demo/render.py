@@ -1,7 +1,9 @@
 """Renders the fsearch vs Everything vs Windows Search demo video from the
 measurements collect.ps1 takes.
 
-  python render.py demo.json out.mp4      (needs Pillow and ffmpeg)
+  python render.py demo.json out.mp4 [explorer.json]   (needs Pillow and ffmpeg)
+
+explorer.json (from bench-explorer-search.ps1) adds the File Explorer race.
 """
 
 import json
@@ -40,6 +42,8 @@ F = {k: font(s, b) for k, (s, b) in {
 }.items()}
 
 data = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+if len(sys.argv) > 3:
+    data["explorer"] = json.load(open(sys.argv[3], encoding="utf-8-sig"))
 HOME = data["home"]
 ENTRIES = data["entries"]
 
@@ -191,6 +195,56 @@ def bars_scene():
     return 165, draw
 
 
+def fmt_long(sec):
+    m, s = divmod(sec, 60)
+    return f"{int(m)}m {s:04.1f}s" if m else f"{s:.1f} s"
+
+
+def explorer_scene(ex):
+    """Find a file on the whole drive: the engines against File Explorer's
+    own search (which crawls whatever isn't indexed)."""
+    q = ex["query"]
+    b = next((r for r in data["bench"] if r["query"] == q), data["bench"][0])
+    rows = [("fsearch", "fsearch", ENGINES[0][2], b["fsearch"]["ms"] / 1000), ("everything", "Everything 1.4", ENGINES[1][2], b["everything"]["ms"] / 1000),
+            ("explorer", "File Explorer", (110, 156, 255), ex["done_s"])]
+    lapse = 3.0  # seconds of video for File Explorer's whole search
+
+    def draw(d, f):
+        x, y = card(d)
+        d.text((x, y - 6), f"Find “{q}” on all of {ex['location'].rstrip(chr(92))}", font=F["bold"], fill=TEXT)
+        d.text((x + 470, y - 4), "File Explorer’s own search, start to finish", font=F["small"], fill=DIM)
+        now = f / FPS  # video seconds into the scene
+        full = W - 120 - 900
+        total = rows[-1][3]
+        for i, (key, label, color, secs) in enumerate(rows):
+            yy = y + 70 + i * 80
+            d.text((x, yy + 8), label, font=F["body"], fill=TEXT)
+            # Engines finish in the first frame; Explorer runs in time-lapse.
+            shown = secs if key != "explorer" else min(secs, total * now / lapse)
+            bw = max(6, int(full * shown / total))
+            d.rectangle((x + 220, yy, x + 220 + bw, yy + 40), fill=color)
+            done = shown >= secs
+            if key == "explorer" and done and ex.get("timed_out"):
+                label_t = f"{round(secs / 60)}m+"
+            else:
+                label_t = fmt_ms(shown * 1000) if secs < 1 else fmt_long(shown)
+            d.text((x + 234 + bw, yy + 8), label_t, font=F["bold"], fill=color)
+            if key == "explorer" and not done:
+                d.text((x + 234 + bw + d.textlength(label_t + "  ", font=F["bold"]), yy + 10), f"time-lapse {total / lapse:.0f}×", font=F["small"], fill=DIM)
+            if key == "explorer" and done:
+                note = f"still searching · {ex['items']} found so far" if ex.get("timed_out") else f"{ex['items']} found"
+                if ex.get("first_result_s"):
+                    note += f" · first result at {fmt_long(ex['first_result_s'])}"
+                d.text((x + 220, yy + 50), note, font=F["small"], fill=DIM)
+        if now > lapse + 0.4:
+            t = ease((now - lapse - 0.4) / 0.6)
+            ratio = total / rows[0][3]
+            more = "over " if ex.get("timed_out") else ""
+            d.text((x, y + 340), f"{more}{ratio:,.0f}× faster than File Explorer", font=F["title"], fill=tuple(int(lerp(CARD[i], ENGINES[0][2][i], t)) for i in range(3)))
+            d.text((x, y + 400), f"fsearch found {b['fsearch']['n']}{'+' if b['fsearch']['n'] >= 50 else ''} in {fmt_ms(rows[0][3] * 1000)}; Explorer crawls every folder Windows Search doesn’t index.", font=F["small"], fill=DIM)
+    return int((lapse + 3.2) * FPS), draw
+
+
 def outro_scene():
     def draw(d, f):
         x, y = card(d)
@@ -201,7 +255,10 @@ def outro_scene():
     return 90, draw
 
 
-scenes = [title_scene()] + [typing_scene(t) for t in data["typed"]] + [bars_scene(), outro_scene()]
+scenes = [title_scene()] + [typing_scene(t) for t in data["typed"]] + [bars_scene()]
+if data.get("explorer"):
+    scenes.append(explorer_scene(data["explorer"]))
+scenes.append(outro_scene())
 out = sys.argv[2]
 ff = subprocess.Popen(
     ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
