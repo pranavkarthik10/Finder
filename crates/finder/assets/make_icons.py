@@ -45,6 +45,7 @@ LINE = {
         '<path d="M3.6 6h16.8M9 6V4.2a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V6M5.6 6l1 14a1.8 1.8 0 0 0 1.8 1.6h7.2a1.8 1.8 0 0 0 1.8-1.6l1-14M10 9.8v8.2M14 9.8v8.2"/>'
     ),
     "eject": F.format('<path d="M12 4.5 19.5 13.5h-15z"/><rect x="4.5" y="16" width="15" height="2.6" rx="1"/>'),
+    "checkmark": S.format('<path d="M5 12.5l4.5 4.5L19 7" stroke-width="2.2"/>'),
     "clock": S.format('<circle cx="12" cy="12" r="9.2"/><path d="M12 6.5V12l3.6 2.4"/>'),
     # toolbar
     "grid": S.format(

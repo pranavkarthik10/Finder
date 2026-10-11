@@ -8,6 +8,7 @@ use crate::ops;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
 
+mod menu;
 mod views;
 use gpui::{
     AnyElement, App, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu]
 );
 
 /// Most results a search shows.
@@ -95,6 +96,7 @@ pub struct Browser {
     renaming: Option<Renaming>,
     /// The last operation's failure, shown in the status bar.
     notice: Option<String>,
+    menu: Option<menu::Menu>,
 }
 
 struct Renaming {
@@ -196,6 +198,7 @@ impl Browser {
             anchor: None,
             renaming: None,
             notice: None,
+            menu: None,
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Cancelled, cx| this.end_search(cx)).detach();
@@ -1219,8 +1222,10 @@ impl Browser {
                         .on_click(cx.listener(|this, _, window, cx| {
                             window.focus(&this.focus, cx);
                             this.selected = None;
+                            this.marked.clear();
                             cx.notify();
                         }))
+                        .on_mouse_down(MouseButton::Right, cx.listener(|this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(None, e.position, window, cx)))
                         .into_any_element();
                 }
                 let entry = self.rows[ix].entry.clone();
@@ -1290,7 +1295,8 @@ impl Browser {
                                 } else {
                                     this.click_select(ix, &e.modifiers(), cx);
                                 }
-                            })),
+                            }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx))),
                     )
                     .into_any_element()
             })
@@ -1513,15 +1519,23 @@ impl Render for Browser {
             .on_action(cx.listener(Self::cut_files))
             .on_action(cx.listener(Self::paste_files))
             .on_action(cx.listener(Self::copy_path))
+            .on_action(cx.listener(Self::reveal_in_explorer))
+            .on_action(cx.listener(Self::show_icons))
+            .on_action(cx.listener(Self::show_list))
+            .on_action(cx.listener(Self::show_columns))
+            .on_action(cx.listener(Self::show_gallery))
+            .on_action(cx.listener(Self::context_menu_key))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))
             .size_full()
+            .relative()
             .flex()
             .bg(t::window_bg())
             .font_family(self.font.clone())
             .text_size(px(t::TEXT_SIZE))
             .text_color(t::text())
+            .children(self.render_menu(cx))
             .child(self.sidebar(window, cx))
             .child(
                 div()

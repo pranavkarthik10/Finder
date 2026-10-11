@@ -23,7 +23,7 @@ square.grid.2x2 list.bullet rectangle.split.3x1 squares.below.rectangle square.g
 square.and.arrow.up tag ellipsis ellipsis.circle magnifyingglass xmark.circle.fill
 menubar.dock.rectangle document arrow.down.circle hammer house icloud internaldrive externaldrive network
 trash eject.fill clock sidebar.left xmark minus plus info.circle folder folder.fill app.badge
-desktopcomputer laptopcomputer globe person.crop.circle arrow.up.arrow.down circle.fill
+desktopcomputer laptopcomputer globe person.crop.circle arrow.up.arrow.down circle.fill checkmark
 """.split()
 
 WEIGHTS = {"regular": "SF-Pro-Text-Regular.otf", "medium": "SF-Pro-Text-Medium.otf", "semibold": "SF-Pro-Text-Semibold.otf"}

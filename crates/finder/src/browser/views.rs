@@ -177,7 +177,8 @@ impl Browser {
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         window.focus(&this.focus, cx);
                         if ev.click_count() >= 2 { this.open_row(ix, cx) } else { this.click_select(ix, &ev.modifiers(), cx) }
-                    })),
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx))),
             );
         }
         row.into_any_element()

@@ -164,6 +164,12 @@ pub fn glass_shadow() -> Vec<BoxShadow> {
         BoxShadow { color: hsla(0., 0., 0., 0.04), offset: point(px(0.), px(0.)), blur_radius: px(1.), spread_radius: px(0.), inset: false },
     ]
 }
+pub fn menu_bg() -> Rgba {
+    if dark() { rgba(0x2C2C2EF5) } else { rgba(0xFAFAFAF5) }
+}
+pub fn menu_shadow() -> Vec<BoxShadow> {
+    vec![BoxShadow { color: hsla(0., 0., 0., if dark() { 0.5 } else { 0.18 }), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
+}
 pub fn glass_icon() -> Hsla {
     if dark() { hsla(0., 0., 1., 0.85) } else { hsla(0., 0., 0.12, 1.) }
 }
