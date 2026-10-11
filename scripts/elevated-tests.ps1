@@ -11,4 +11,3 @@ foreach ($i in 1..2) {
 }
 
 'done' | Add-Content $log
-'done' | Add-Content $log
