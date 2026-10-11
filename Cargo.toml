@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/fsearch"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Release plus symbols, for profilers: cargo build --profile profiling
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
