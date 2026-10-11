@@ -71,9 +71,3 @@ pub fn symbol(name: &str) -> SharedString {
     let file = STAND_INS.iter().find(|(n, _)| *n == base).map_or(base, |(_, f)| f);
     format!("icons/{file}.svg").into()
 }
-
-/// Whether symbols are real SF Symbols (sized in a 1.25 em frame) or our
-/// stand-ins (drawn to fill their box).
-pub fn has_sf() -> bool {
-    Assets::get("icons/sf/folder.svg").is_some()
-}

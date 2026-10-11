@@ -434,25 +434,22 @@ impl Browser {
                 );
             }
         }
-        // The floating panel, inset from the window's edges; Mica shows
-        // in the margin around it.
-        div().h_full().flex_none().pl(px(t::SIDEBAR_MARGIN)).py(px(t::SIDEBAR_MARGIN)).window_control_area(WindowControlArea::Drag).child(
-            div()
-                .relative()
-                .w(px(t::SIDEBAR_W))
-                .h_full()
-                .flex()
-                .flex_col()
-                .rounded(px(t::SIDEBAR_RADIUS))
-                .bg(t::sidebar_bg())
-                .border(px(0.5))
-                .border_color(t::sidebar_border())
-                .shadow(t::sidebar_shadow())
-                // Title-bar strip: drags the window.
-                .child(div().h(px(t::TOOLBAR_H - t::SIDEBAR_MARGIN)).flex_none().window_control_area(WindowControlArea::Drag))
-                .child(col)
-                .child(self.traffic_lights(window)),
-        )
+        // Flush with the window's edges (macOS 27 dropped Tahoe's floating
+        // panel), divided from the content by a hairline.
+        div()
+            .relative()
+            .w(px(t::SIDEBAR_W))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(t::sidebar_bg())
+            .border_r_1()
+            .border_color(t::separator())
+            // Title-bar strip: drags the window.
+            .child(div().h(px(t::TOOLBAR_H)).flex_none().window_control_area(WindowControlArea::Drag))
+            .child(col)
+            .child(self.traffic_lights(window))
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {

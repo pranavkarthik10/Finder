@@ -31,18 +31,16 @@ pub const WINDOW_H: f32 = 720.;
 pub const WINDOW_MIN_W: f32 = 760.;
 pub const WINDOW_MIN_H: f32 = 420.;
 pub const TOOLBAR_H: f32 = 52.;
-/// Behind the floating sidebar: a neutral surface, slightly darker than
-/// the panel, as in Tahoe (no wallpaper tint).
 pub fn window_bg() -> Rgba {
-    if dark() { rgb(0x161617) } else { rgb(0xEEEFEF) }
+    if dark() { rgb(0x1E1E1E) } else { rgb(0xFFFFFF) }
 }
 
 // Traffic lights
 pub const LIGHT_D: f32 = 14.;
 pub const LIGHT_GAP: f32 = 8.;
-/// From the sidebar panel's top-left corner.
-pub const LIGHTS_X: f32 = 11.;
-pub const LIGHTS_Y: f32 = 11.;
+/// From the window's top-left corner.
+pub const LIGHTS_X: f32 = 19.;
+pub const LIGHTS_Y: f32 = (TOOLBAR_H - LIGHT_D) / 2.;
 pub fn light_close() -> Rgba {
     rgb(0xFF5F57)
 }
@@ -62,19 +60,14 @@ pub fn light_glyph() -> Rgba {
     if dark() { rgba(0x00000099) } else { rgba(0x00000099) }
 }
 
-// Sidebar: a floating glass panel inset from the window edges.
+// Sidebar: full height, flush with the window's edges.
 pub const SIDEBAR_W: f32 = 206.;
-pub const SIDEBAR_MARGIN: f32 = 8.;
-pub const SIDEBAR_RADIUS: f32 = 18.;
 pub const SIDEBAR_ROW_H: f32 = 30.;
 pub const SIDEBAR_INSET: f32 = 8.;
 /// SF Symbols' point size in the sidebar.
 pub const SIDEBAR_SYMBOL: f32 = 15.;
 pub fn sidebar_bg() -> Rgba {
-    if dark() { rgba(0x2A2A2CF2) } else { rgba(0xF9F9FAF2) }
-}
-pub fn sidebar_border() -> Rgba {
-    if dark() { rgba(0xFFFFFF14) } else { rgba(0x0000000D) }
+    if dark() { rgb(0x262628) } else { rgb(0xF4F4F6) }
 }
 pub fn sidebar_selected() -> Rgba {
     if dark() { rgba(0xFFFFFF1A) } else { rgba(0x0000000F) }
@@ -87,9 +80,6 @@ pub fn sidebar_icon() -> Rgba {
 }
 pub fn accent() -> Rgba {
     if dark() { rgb(0x3D9BFF) } else { rgb(0x0A7AFF) }
-}
-pub fn sidebar_shadow() -> Vec<BoxShadow> {
-    vec![BoxShadow { color: hsla(0., 0., 0., if dark() { 0.3 } else { 0.06 }), offset: point(px(0.), px(1.)), blur_radius: px(6.), spread_radius: px(0.), inset: false }]
 }
 
 // Content
