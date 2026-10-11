@@ -11,7 +11,7 @@ mod ops;
 mod text_input;
 mod theme;
 
-use browser::{Browser, Collapse, ContextMenu, CopyFiles, CopyPath, CutFiles, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, PasteFiles, Rename, SelectAll, SelectNext, SelectPrev, Trash, UndoOp};
+use browser::{Browser, Collapse, ContextMenu, CopyFiles, CopyPath, CutFiles, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, PasteFiles, Rename, SelectAll, QuickLook, SelectNext, SelectPrev, Trash, UndoOp};
 use gpui::{
     App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
@@ -48,6 +48,8 @@ fn main() {
             KeyBinding::new("ctrl-alt-c", CopyPath, Some("Browser")),
             KeyBinding::new("shift-f10", ContextMenu, Some("Browser")),
             KeyBinding::new("ctrl-z", UndoOp, Some("Browser")),
+            KeyBinding::new("space", QuickLook, Some("Browser")),
+            KeyBinding::new("ctrl-y", QuickLook, Some("Browser")),
             KeyBinding::new("enter", text_input::Confirm, Some("TextInput")),
             KeyBinding::new("escape", text_input::Cancel, Some("TextInput")),
             // The search field (Ctrl stands in for Command).

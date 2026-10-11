@@ -10,6 +10,7 @@ use crate::theme as t;
 
 mod dnd;
 mod menu;
+mod quicklook;
 mod views;
 use gpui::{
     AnyElement, App, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp, QuickLook]
 );
 
 /// Most results a search shows.
@@ -100,6 +101,10 @@ pub struct Browser {
     menu: Option<menu::Menu>,
     /// What Ctrl+Z reverses, newest last.
     undo: Vec<Undo>,
+    /// The Quick Look panel is up.
+    quick_look: bool,
+    /// Quick Look's text of the item it shows.
+    peek: Option<quicklook::Peek>,
 }
 
 /// How to reverse a file operation.
@@ -214,6 +219,8 @@ impl Browser {
             notice: None,
             menu: None,
             undo: Vec::new(),
+            quick_look: false,
+            peek: None,
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Cancelled, cx| this.end_search(cx)).detach();
@@ -836,6 +843,11 @@ impl Browser {
     }
 
     fn escape(&mut self, _: &EndSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_look {
+            self.quick_look = false;
+            cx.notify();
+            return;
+        }
         self.end_search(cx);
         window.focus(&self.focus, cx);
     }
@@ -1588,6 +1600,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::show_gallery))
             .on_action(cx.listener(Self::context_menu_key))
             .on_action(cx.listener(Self::undo_op))
+            .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))
@@ -1598,6 +1611,7 @@ impl Render for Browser {
             .font_family(self.font.clone())
             .text_size(px(t::TEXT_SIZE))
             .text_color(t::text())
+            .children(self.render_quick_look(window, cx))
             .children(self.render_menu(cx))
             .child(self.sidebar(window, cx))
             .child(
