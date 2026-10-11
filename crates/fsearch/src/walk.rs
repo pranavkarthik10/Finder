@@ -9,6 +9,8 @@ mod mac;
 #[cfg(target_os = "macos")]
 pub use mac::{list_one, scan};
 #[cfg(windows)]
+mod mft;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 pub(crate) use win::push_utf8;

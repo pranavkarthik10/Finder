@@ -98,6 +98,7 @@ fn main() {
         Some("stdio") => stdio(),
         Some("status") => print_one(&serde_json::json!({"op": "status"}), true),
         Some("bench") => bench(&args[1..].join(" ")),
+        Some("scan") => scan(),
         Some("install") => install(args.iter().any(|a| a == "--login")),
         Some("uninstall") => uninstall(),
         Some(_) => {
@@ -154,6 +155,14 @@ fn stdio() {
             break;
         }
     }
+}
+
+/// Time a whole-disk scan (no index written).
+fn scan() {
+    let t = Instant::now();
+    let ls = fsearch::walk::scan(b"/", 8);
+    let n: usize = ls.iter().map(|l| l.ents.len()).sum();
+    eprintln!("{n} entries in {} folders, {:.2?}", ls.len(), t.elapsed());
 }
 
 fn bench(qs: &str) {

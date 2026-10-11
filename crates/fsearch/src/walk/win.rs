@@ -75,9 +75,24 @@ pub fn scan(root: &[u8], threads: usize) -> Vec<Listing> {
         let mut l = drive_listing(0);
         let mut kids = Vec::new();
         for e in l.ents.iter_mut() {
+            let letter = l.names[e.name_off as usize];
+            // Straight from the master file table when we may (admin, NTFS).
+            if std::env::var_os("FSEARCH_NO_MFT").is_none()
+                && let Some(mut ls) = super::mft::scan_volume(letter)
+            {
+                let base = ctx.next_id.fetch_add(ls.len() as u32, Ordering::Relaxed);
+                for l in ls.iter_mut() {
+                    l.id += base;
+                    for c in l.ents.iter_mut().filter(|c| c.child != NONE) {
+                        c.child += base;
+                    }
+                }
+                e.child = base;
+                ctx.out[ctx.out.len() - 1].lock().unwrap().extend(ls);
+                continue;
+            }
             e.child = ctx.next_id.fetch_add(1, Ordering::Relaxed);
-            let name = &l.names[e.name_off as usize..][..2];
-            kids.push((wide(&[b"/", name].concat()), e.child));
+            kids.push((wide(&[b'/', letter, b':']), e.child));
         }
         push(l, &ctx);
         for (path, id) in kids {
