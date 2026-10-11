@@ -40,12 +40,16 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions { title: Some("Finder".into()), appears_transparent: true, traffic_light_position: None }),
-                    window_background: WindowBackgroundAppearance::MicaBackdrop,
+                    window_background: WindowBackgroundAppearance::Opaque,
                     window_min_size: Some(size(px(theme::WINDOW_MIN_W), px(theme::WINDOW_MIN_H))),
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view = cx.new(|cx| Browser::new(font, cx));
+                    let view = cx.new(|cx| {
+                        // Light/dark follows Windows, live.
+                        cx.observe_window_appearance(window, |_, window, _| window.refresh()).detach();
+                        Browser::new(font, cx)
+                    });
                     window.focus(&view.focus_handle(cx), cx);
                     view
                 },

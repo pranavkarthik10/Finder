@@ -796,6 +796,13 @@ impl Browser {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // FINDER_APPEARANCE=light|dark overrides the system's, for testing.
+        let dark = match std::env::var("FINDER_APPEARANCE").as_deref() {
+            Ok("dark") => true,
+            Ok("light") => false,
+            _ => matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark),
+        };
+        t::set_dark(dark);
         div()
             .id("browser")
             .key_context("Browser")

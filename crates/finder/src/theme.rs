@@ -1,8 +1,20 @@
-//! Finder's look: macOS 26 (Tahoe) light appearance, in points, measured
-//! from Tahoe screenshots (see docs/design-notes.md). One place for every
-//! color, size and font, so the app can be tuned without touching views.
+//! Finder's look: macOS 26 (Tahoe), light and dark, in points, measured
+//! from Tahoe screenshots. One place for every color, size and font, so
+//! the app can be tuned without touching views.
 
 use gpui::{BoxShadow, Hsla, Rgba, hsla, point, px, rgb, rgba};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DARK: AtomicBool = AtomicBool::new(false);
+
+/// Follow the window's appearance (set before each frame is drawn).
+pub fn set_dark(dark: bool) {
+    DARK.store(dark, Ordering::Relaxed);
+}
+
+pub fn dark() -> bool {
+    DARK.load(Ordering::Relaxed)
+}
 
 /// Preferred UI fonts, first installed wins: SF Pro (loaded from the local
 /// fonts folder) for testing, Inter as the shippable stand-in, then
@@ -19,9 +31,10 @@ pub const WINDOW_H: f32 = 720.;
 pub const WINDOW_MIN_W: f32 = 760.;
 pub const WINDOW_MIN_H: f32 = 420.;
 pub const TOOLBAR_H: f32 = 52.;
-/// Behind the floating sidebar (Mica shows through it).
+/// Behind the floating sidebar: a neutral surface, slightly darker than
+/// the panel, as in Tahoe (no wallpaper tint).
 pub fn window_bg() -> Rgba {
-    rgba(0xF1F2F200)
+    if dark() { rgb(0x161617) } else { rgb(0xEEEFEF) }
 }
 
 // Traffic lights
@@ -40,13 +53,13 @@ pub fn light_max() -> Rgba {
     rgb(0x28C840)
 }
 pub fn light_inactive() -> Rgba {
-    rgb(0xDDDDDD)
+    if dark() { rgb(0x4A4A4C) } else { rgb(0xDDDDDD) }
 }
 pub fn light_border() -> Rgba {
-    rgba(0x00000014)
+    if dark() { rgba(0x00000040) } else { rgba(0x00000014) }
 }
 pub fn light_glyph() -> Rgba {
-    rgba(0x00000099)
+    if dark() { rgba(0x00000099) } else { rgba(0x00000099) }
 }
 
 // Sidebar: a floating glass panel inset from the window edges.
@@ -58,25 +71,25 @@ pub const SIDEBAR_INSET: f32 = 8.;
 /// SF Symbols' point size in the sidebar.
 pub const SIDEBAR_SYMBOL: f32 = 15.;
 pub fn sidebar_bg() -> Rgba {
-    rgba(0xF9F9FAF2)
+    if dark() { rgba(0x2A2A2CF2) } else { rgba(0xF9F9FAF2) }
 }
 pub fn sidebar_border() -> Rgba {
-    rgba(0x0000000D)
+    if dark() { rgba(0xFFFFFF14) } else { rgba(0x0000000D) }
 }
 pub fn sidebar_selected() -> Rgba {
-    rgba(0x0000000F)
+    if dark() { rgba(0xFFFFFF1A) } else { rgba(0x0000000F) }
 }
 pub fn sidebar_header() -> Rgba {
-    rgba(0x00000066)
+    if dark() { rgba(0xFFFFFF66) } else { rgba(0x00000066) }
 }
 pub fn sidebar_icon() -> Rgba {
-    rgba(0x000000B3)
+    if dark() { rgba(0xFFFFFFB3) } else { rgba(0x000000B3) }
 }
 pub fn accent() -> Rgba {
-    rgb(0x0A7AFF)
+    if dark() { rgb(0x3D9BFF) } else { rgb(0x0A7AFF) }
 }
 pub fn sidebar_shadow() -> Vec<BoxShadow> {
-    vec![BoxShadow { color: hsla(0., 0., 0., 0.06), offset: point(px(0.), px(1.)), blur_radius: px(6.), spread_radius: px(0.), inset: false }]
+    vec![BoxShadow { color: hsla(0., 0., 0., if dark() { 0.3 } else { 0.06 }), offset: point(px(0.), px(1.)), blur_radius: px(6.), spread_radius: px(0.), inset: false }]
 }
 
 // Content
@@ -93,25 +106,25 @@ pub const DATE_W: f32 = 200.;
 pub const SIZE_W: f32 = 80.;
 pub const KIND_W: f32 = 140.;
 pub fn content_bg() -> Rgba {
-    rgb(0xFFFFFF)
+    if dark() { rgb(0x1E1E1E) } else { rgb(0xFFFFFF) }
 }
 pub fn zebra() -> Rgba {
-    rgb(0xF4F5F5)
+    if dark() { rgb(0x262627) } else { rgb(0xF4F5F5) }
 }
 pub fn selection() -> Rgba {
-    rgb(0x0056DF)
+    if dark() { rgb(0x0058D0) } else { rgb(0x0056DF) }
 }
 pub fn selection_inactive() -> Rgba {
-    rgb(0xDCDCDC)
+    if dark() { rgb(0x464648) } else { rgb(0xDCDCDC) }
 }
 pub fn inspector_bg() -> Rgba {
-    rgb(0xFFFFFF)
+    if dark() { rgb(0x1E1E1E) } else { rgb(0xFFFFFF) }
 }
 pub fn separator() -> Rgba {
-    rgba(0x00000017)
+    if dark() { rgba(0xFFFFFF1A) } else { rgba(0x00000017) }
 }
 pub fn bar_bg() -> Rgba {
-    rgb(0xF9F9F9)
+    if dark() { rgb(0x232324) } else { rgb(0xF9F9F9) }
 }
 
 // Text
@@ -120,13 +133,13 @@ pub const SMALL_SIZE: f32 = 11.;
 pub const HEADER_SIZE: f32 = 12.;
 pub const TITLE_SIZE: f32 = 15.;
 pub fn text() -> Rgba {
-    rgba(0x000000DE)
+    if dark() { rgba(0xFFFFFFE0) } else { rgba(0x000000DE) }
 }
 pub fn text_secondary() -> Rgba {
-    rgba(0x00000080)
+    if dark() { rgba(0xFFFFFF8C) } else { rgba(0x00000080) }
 }
 pub fn text_tertiary() -> Rgba {
-    rgba(0x00000047)
+    if dark() { rgba(0xFFFFFF4D) } else { rgba(0x00000047) }
 }
 
 // Toolbar controls: Liquid Glass capsules floating over the content.
@@ -135,20 +148,20 @@ pub const CAPSULE_GAP: f32 = 10.;
 /// SF Symbols' point size in the toolbar.
 pub const TOOL_SYMBOL: f32 = 15.;
 pub fn glass() -> Rgba {
-    rgba(0xFFFFFFEB)
+    if dark() { rgba(0x3A3A3CEB) } else { rgba(0xFFFFFFEB) }
 }
 pub fn glass_border() -> Rgba {
-    rgba(0x0000000A)
+    if dark() { rgba(0xFFFFFF14) } else { rgba(0x0000000A) }
 }
 pub fn glass_pressed() -> Rgba {
-    rgba(0x00000012)
+    if dark() { rgba(0xFFFFFF1F) } else { rgba(0x00000012) }
 }
 pub fn glass_shadow() -> Vec<BoxShadow> {
     vec![
-        BoxShadow { color: hsla(0., 0., 0., 0.07), offset: point(px(0.), px(2.)), blur_radius: px(12.), spread_radius: px(0.), inset: false },
+        BoxShadow { color: hsla(0., 0., 0., if dark() { 0.35 } else { 0.07 }), offset: point(px(0.), px(2.)), blur_radius: px(12.), spread_radius: px(0.), inset: false },
         BoxShadow { color: hsla(0., 0., 0., 0.04), offset: point(px(0.), px(0.)), blur_radius: px(1.), spread_radius: px(0.), inset: false },
     ]
 }
 pub fn glass_icon() -> Hsla {
-    hsla(0., 0., 0.12, 1.)
+    if dark() { hsla(0., 0., 1., 0.85) } else { hsla(0., 0., 0.12, 1.) }
 }
