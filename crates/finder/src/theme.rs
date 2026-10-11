@@ -107,6 +107,10 @@ pub fn selection() -> Rgba {
 pub fn selection_inactive() -> Rgba {
     if dark() { rgb(0x464648) } else { rgb(0xDCDCDC) }
 }
+/// Behind a selected icon in the grid.
+pub fn icon_selected() -> Rgba {
+    if dark() { rgba(0xFFFFFF1F) } else { rgba(0x00000014) }
+}
 pub fn inspector_bg() -> Rgba {
     if dark() { rgb(0x1E1E1E) } else { rgb(0xFFFFFF) }
 }

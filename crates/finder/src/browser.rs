@@ -5,6 +5,8 @@ use crate::assets::symbol;
 use crate::icons;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
+
+mod views;
 use gpui::{
     AnyElement, App, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
     ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, WindowControlArea, actions, div, img,
@@ -70,6 +72,16 @@ pub struct Browser {
     /// Filters typed into the field, shown as chips before the text:
     /// (key, value) as in `ext:pdf`.
     chips: Vec<(String, String)>,
+    /// Column view: the current folder, then each selected folder.
+    columns: Vec<views::Column>,
+    /// The column the arrow keys move in.
+    col_focus: usize,
+    col_scroll: gpui::ScrollHandle,
+    /// Gallery filmstrip.
+    strip_scroll: gpui::ScrollHandle,
+    strip_width: f32,
+    /// Icon view: cells per row (last laid out).
+    grid_cols: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,6 +167,12 @@ impl Browser {
             search: None,
             search_gen: 0,
             chips: Vec::new(),
+            columns: Vec::new(),
+            col_focus: 0,
+            col_scroll: gpui::ScrollHandle::new(),
+            strip_scroll: gpui::ScrollHandle::new(),
+            strip_width: 600.,
+            grid_cols: 1,
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::BackspaceAtStart, cx| {
@@ -163,7 +181,18 @@ impl Browser {
             }
         })
         .detach();
+        // FINDER_DIR / FINDER_VIEW pick where and how it opens (testing).
+        let start = std::env::var_os("FINDER_DIR").map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or(start);
         b.load(if start.is_dir() { start } else { home() });
+        b.view = match std::env::var("FINDER_VIEW").as_deref() {
+            Ok("icons") => ViewMode::Icons,
+            Ok("columns") => ViewMode::Columns,
+            Ok("gallery") => ViewMode::Gallery,
+            _ => ViewMode::List,
+        };
+        if let Ok(name) = std::env::var("FINDER_SELECT") {
+            b.select_by_name(&name, cx);
+        }
         // FINDER_SEARCH="..." types a search at startup (for testing
         // without driving the keyboard).
         if let Ok(q) = std::env::var("FINDER_SEARCH") {
@@ -462,30 +491,38 @@ impl Browser {
 
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected = Some(ix);
-        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        self.reveal(ix);
         cx.notify();
     }
+
+    // Arrow keys mean what they do in each view: rows in the list, cells
+    // in the grid and filmstrip, columns in the column view.
 
     fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         // From the search field too: the arrow moves into the results.
         window.focus(&self.focus, cx);
-        if self.rows.is_empty() {
-            return;
+        match self.shown_view() {
+            ViewMode::Columns => self.col_step(1, cx),
+            ViewMode::Icons => self.step(self.grid_cols as isize, cx),
+            _ => self.step(1, cx),
         }
-        let ix = self.selected.map_or(0, |i| (i + 1).min(self.rows.len() - 1));
-        self.select(ix, cx);
     }
 
     fn select_prev(&mut self, _: &SelectPrev, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
-        if self.rows.is_empty() {
-            return;
+        match self.shown_view() {
+            ViewMode::Columns => self.col_step(-1, cx),
+            ViewMode::Icons => self.step(-(self.grid_cols as isize), cx),
+            _ => self.step(-1, cx),
         }
-        let ix = self.selected.map_or(self.rows.len() - 1, |i| i.saturating_sub(1));
-        self.select(ix, cx);
     }
 
     fn expand_selected(&mut self, _: &Expand, _: &mut Window, cx: &mut Context<Self>) {
+        match self.shown_view() {
+            ViewMode::Columns => return self.col_right(cx),
+            ViewMode::Icons | ViewMode::Gallery => return self.step(1, cx),
+            ViewMode::List => {}
+        }
         if let Some(i) = self.selected {
             self.expand(i);
             cx.notify();
@@ -494,6 +531,11 @@ impl Browser {
 
     /// Left arrow: fold the folder, or else go to its parent row.
     fn collapse_selected(&mut self, _: &Collapse, _: &mut Window, cx: &mut Context<Self>) {
+        match self.shown_view() {
+            ViewMode::Columns => return self.col_left(cx),
+            ViewMode::Icons | ViewMode::Gallery => return self.step(-1, cx),
+            ViewMode::List => {}
+        }
         let Some(i) = self.selected else { return };
         if self.rows[i].expanded {
             self.collapse(i);
@@ -508,6 +550,9 @@ impl Browser {
     }
 
     fn open_selected(&mut self, _: &Open, _: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_view() == ViewMode::Columns {
+            return self.col_open(cx);
+        }
         if let Some(i) = self.selected {
             self.open_row(i, cx);
         }
@@ -693,8 +738,7 @@ impl Browser {
         };
         let view_btn = |id: &'static str, name: &'static str, mode: ViewMode, cx: &mut Context<Self>| {
             tool_button(id, name, self.view == mode).on_click(cx.listener(move |this, _, _, cx| {
-                this.view = mode;
-                cx.notify();
+                this.set_view(mode, cx);
             }))
         };
         div()
@@ -966,9 +1010,10 @@ impl Browser {
 
     fn path_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // While searching it shows where the selected result is.
-        let target = match &self.search {
-            Some(_) => self.selected.and_then(|i| self.rows.get(i)).map(|r| r.entry.path.clone()),
-            None => Some(self.current.clone()),
+        let target = match (&self.search, self.view) {
+            (Some(_), _) => self.selected_entry().map(|e| e.path),
+            (None, ViewMode::Columns) => Some(self.selected_entry().map_or_else(|| self.current.clone(), |e| e.path)),
+            (None, _) => Some(self.current.clone()),
         };
         let mut crumbs: Vec<PathBuf> = target.iter().flat_map(|p| p.ancestors()).map(Path::to_path_buf).collect();
         crumbs.reverse();
@@ -1010,7 +1055,7 @@ impl Browser {
     /// "24 items, 58.9 GB available".
     fn status_bar(&self) -> impl IntoElement {
         let n = self.rows.iter().filter(|r| r.depth == 0).count();
-        let items = match (n, self.selected) {
+        let items = match (n, self.selected_entry().map(|_| ())) {
             (n, Some(_)) => format!("1 of {n} selected"),
             (1, None) => "1 item".to_string(),
             (n, None) => format!("{n} items"),
@@ -1053,9 +1098,8 @@ impl Browser {
     fn inspector(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // Search results carry only what the index knows: stat for the rest.
         let e = self
-            .selected
-            .and_then(|i| self.rows.get(i))
-            .map(|r| if r.entry.created.is_none() { Entry::from_path(r.entry.path.clone()).unwrap_or_else(|| r.entry.clone()) } else { r.entry.clone() })
+            .selected_entry()
+            .map(|e| if e.created.is_none() { Entry::from_path(e.path.clone()).unwrap_or(e) } else { e })
             .or_else(|| Entry::from_path(self.current.clone()));
         let mut col = div().flex_1().min_h_0().flex().flex_col().px(px(16.)).pb(px(10.)).text_size(px(t::TEXT_SIZE));
         if let Some(e) = e {
@@ -1082,7 +1126,7 @@ impl Browser {
                             .rounded(px(8.))
                             .border_1()
                             .border_color(t::separator())
-                            .child(img(src).max_w(px(230.)).max_h(px(196.)))
+                            .child(div().w(px(230.)).h(px(196.)).flex().items_center().justify_center().overflow_hidden().child(img(src).size_full().object_fit(gpui::ObjectFit::Contain)))
                             .into_any_element()
                     } else {
                         img(src).size(px(160.)).into_any_element()
@@ -1173,7 +1217,7 @@ impl Render for Browser {
                             .flex_col()
                             .child(self.toolbar(cx))
                             .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
-                            .child(self.list(window, cx))
+                            .child(self.main_view(window, cx))
                             .child(self.path_bar(cx))
                             .child(self.status_bar()),
                     )
