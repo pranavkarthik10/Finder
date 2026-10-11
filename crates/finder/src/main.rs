@@ -6,9 +6,10 @@ mod assets;
 mod browser;
 mod files;
 mod icons;
+mod text_input;
 mod theme;
 
-use browser::{Browser, Collapse, Expand, GoBack, GoForward, GoUp, Open, SelectNext, SelectPrev};
+use browser::{Browser, Collapse, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, Open, SelectNext, SelectPrev};
 use gpui::{
     App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
@@ -31,6 +32,21 @@ fn main() {
             KeyBinding::new("alt-left", GoBack, Some("Browser")),
             KeyBinding::new("alt-right", GoForward, Some("Browser")),
             KeyBinding::new("backspace", GoBack, Some("Browser")),
+            KeyBinding::new("ctrl-f", FocusSearch, Some("Browser")),
+            KeyBinding::new("escape", EndSearch, Some("Browser")),
+            // The search field (Ctrl stands in for Command).
+            KeyBinding::new("backspace", text_input::Backspace, Some("TextInput")),
+            KeyBinding::new("delete", text_input::Delete, Some("TextInput")),
+            KeyBinding::new("left", text_input::Left, Some("TextInput")),
+            KeyBinding::new("right", text_input::Right, Some("TextInput")),
+            KeyBinding::new("shift-left", text_input::SelectLeft, Some("TextInput")),
+            KeyBinding::new("shift-right", text_input::SelectRight, Some("TextInput")),
+            KeyBinding::new("ctrl-a", text_input::SelectAll, Some("TextInput")),
+            KeyBinding::new("ctrl-v", text_input::Paste, Some("TextInput")),
+            KeyBinding::new("ctrl-c", text_input::Copy, Some("TextInput")),
+            KeyBinding::new("ctrl-x", text_input::Cut, Some("TextInput")),
+            KeyBinding::new("home", text_input::Home, Some("TextInput")),
+            KeyBinding::new("end", text_input::End, Some("TextInput")),
         ]);
         load_local_fonts(cx);
         let font: SharedString = theme::ui_font(&cx.text_system().all_font_names()).into();

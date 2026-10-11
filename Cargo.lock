@@ -1537,6 +1537,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "rust-embed",
+ "unicode-segmentation",
  "windows 0.62.2",
 ]
 

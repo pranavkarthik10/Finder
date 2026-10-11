@@ -3,6 +3,7 @@
 use crate::files::{self, Entry, SortKey};
 use crate::assets::symbol;
 use crate::icons;
+use crate::text_input::{self, TextInput};
 use crate::theme as t;
 use gpui::{
     AnyElement, App, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
@@ -12,8 +13,12 @@ use gpui::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-actions!(finder, [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp]);
+actions!(finder, [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch]);
+
+/// Most results a search shows.
+const SEARCH_LIMIT: usize = 1000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -55,6 +60,31 @@ pub struct Browser {
     focus: FocusHandle,
     error: Option<String>,
     icons: HashMap<icons::Key, Icon>,
+    search_input: gpui::Entity<TextInput>,
+    /// The whole-disk index (fsearch), in-process.
+    engine: Option<fsearch::Engine>,
+    /// Set while the search field has text: the list shows results.
+    search: Option<Search>,
+    /// Bumped per query; results of older ones are dropped.
+    search_gen: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    ThisPc,
+    Folder,
+}
+
+struct Search {
+    /// The folder the search began in (the "Folder" scope).
+    root: PathBuf,
+    scope: Scope,
+    took: Option<Duration>,
+    capped: bool,
+    /// Why there are no results (still indexing, a bad query).
+    error: Option<String>,
+    /// Sorted by a column; else by relevance.
+    sorted: bool,
 }
 
 enum Icon {
@@ -117,7 +147,12 @@ impl Browser {
             focus: cx.focus_handle(),
             error: None,
             icons: HashMap::new(),
+            search_input: cx.new(|cx| TextInput::new("Search", cx)),
+            engine: fsearch::Engine::start(fsearch::Options { dir: fsearch::sys::data_dir(), home: fsearch::sys::home(), skip: None }).ok(),
+            search: None,
+            search_gen: 0,
         };
+        cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         b.load(if start.is_dir() { start } else { home() });
         b
     }
@@ -142,6 +177,7 @@ impl Browser {
     }
 
     fn navigate(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        self.end_search(cx);
         if dir == self.current {
             return;
         }
@@ -192,6 +228,16 @@ impl Browser {
 
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
         self.sort = if self.sort.0 == key { (key, !self.sort.1) } else { (key, true) };
+        if let Some(s) = &mut self.search {
+            s.sorted = true;
+            let sel = self.selected.map(|i| self.rows[i].entry.path.clone());
+            let mut v: Vec<Entry> = self.rows.drain(..).map(|r| r.entry).collect();
+            files::sort(&mut v, self.sort.0, self.sort.1);
+            self.rows = v.into_iter().map(|entry| Row { entry, depth: 0, expanded: false }).collect();
+            self.selected = sel.and_then(|p| self.rows.iter().position(|r| r.entry.path == p));
+            cx.notify();
+            return;
+        }
         let sel = self.selected.map(|i| self.rows[i].entry.path.clone());
         let cur = self.current.clone();
         let expanded: Vec<PathBuf> = self.rows.iter().filter(|r| r.expanded).map(|r| r.entry.path.clone()).collect();
@@ -210,7 +256,7 @@ impl Browser {
 
     fn expand(&mut self, ix: usize) {
         let r = &self.rows[ix];
-        if !r.entry.is_dir || r.expanded {
+        if !r.entry.is_dir || r.expanded || self.search.is_some() {
             return;
         }
         let depth = r.depth + 1;
@@ -262,6 +308,126 @@ impl Browser {
         e.icon().into()
     }
 
+    // Search
+
+    fn query_changed(&mut self, cx: &mut Context<Self>) {
+        let text = self.search_input.read(cx).text().trim().to_string();
+        if text.is_empty() {
+            if self.search.take().is_some() {
+                let cur = self.current.clone();
+                self.load(cur);
+                cx.notify();
+            }
+            return;
+        }
+        if self.search.is_none() {
+            self.search = Some(Search { root: self.current.clone(), scope: Scope::ThisPc, took: None, capped: false, error: None, sorted: false });
+        }
+        self.run_search(text, cx);
+    }
+
+    fn run_search(&mut self, text: String, cx: &mut Context<Self>) {
+        let (Some(engine), Some(s)) = (self.engine.clone(), self.search.as_mut()) else { return };
+        let mut q = match fsearch::Query::parse(&text, &fsearch::sys::home()) {
+            Ok(q) => q,
+            Err(e) => {
+                s.error = Some(e);
+                cx.notify();
+                return;
+            }
+        };
+        q.limit = SEARCH_LIMIT;
+        if s.scope == Scope::Folder {
+            q.scope = Some(fsearch::sys::index_path(&s.root));
+        }
+        self.search_gen += 1;
+        let generation = self.search_gen;
+        cx.spawn(async move |this, cx| {
+            let t = Instant::now();
+            let res = cx.background_spawn(async move { engine.search(&q) }).await;
+            let took = t.elapsed();
+            let _ = this.update(cx, |b, cx| b.show_results(generation, text, res, took, cx));
+        })
+        .detach();
+    }
+
+    fn show_results(&mut self, generation: u64, text: String, res: Result<Vec<fsearch::Found>, String>, took: Duration, cx: &mut Context<Self>) {
+        if generation != self.search_gen {
+            return;
+        }
+        let Some(s) = self.search.as_mut() else { return };
+        match res {
+            Ok(found) => {
+                s.error = None;
+                s.took = Some(took);
+                s.capped = found.len() >= SEARCH_LIMIT;
+                let mut v: Vec<Entry> = found
+                    .into_iter()
+                    .map(|f| {
+                        let name = f.path.file_name().map_or_else(|| f.path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+                        let modified = Some(UNIX_EPOCH + Duration::from_secs(f.mtime as u64));
+                        Entry::from_parts(name, f.path, f.kind & 3 == fsearch::walk::KIND_DIR, f.size, modified)
+                    })
+                    .collect();
+                if s.sorted {
+                    files::sort(&mut v, self.sort.0, self.sort.1);
+                }
+                self.rows = v.into_iter().map(|entry| Row { entry, depth: 0, expanded: false }).collect();
+                self.selected = None;
+                self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+            }
+            Err(e) => {
+                // Still indexing: ask again shortly.
+                let retry = e.starts_with("indexing");
+                s.error = Some(e);
+                if retry {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(Duration::from_secs(1)).await;
+                        let _ = this.update(cx, |b, cx| {
+                            if b.search_gen == generation && b.search.is_some() {
+                                b.run_search(text, cx);
+                            }
+                        });
+                    })
+                    .detach();
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        if let Some(s) = &mut self.search
+            && s.scope != scope
+        {
+            s.scope = scope;
+            let text = self.search_input.read(cx).text().trim().to_string();
+            self.run_search(text, cx);
+        }
+    }
+
+    /// Leave search: clear the field, back to the folder.
+    fn end_search(&mut self, cx: &mut Context<Self>) {
+        if self.search.take().is_some() {
+            self.search_gen += 1;
+            self.search_input.update(cx, |i, cx| i.set_text("", cx));
+            let cur = self.current.clone();
+            self.load(cur);
+            cx.notify();
+        }
+    }
+
+    fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        let h = self.search_input.focus_handle(cx);
+        window.focus(&h, cx);
+        cx.notify();
+    }
+
+    fn escape(&mut self, _: &EndSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_search(cx);
+        window.focus(&self.focus, cx);
+    }
+
     // Keyboard
 
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -270,7 +436,9 @@ impl Browser {
         cx.notify();
     }
 
-    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
+        // From the search field too: the arrow moves into the results.
+        window.focus(&self.focus, cx);
         if self.rows.is_empty() {
             return;
         }
@@ -278,7 +446,8 @@ impl Browser {
         self.select(ix, cx);
     }
 
-    fn select_prev(&mut self, _: &SelectPrev, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_prev(&mut self, _: &SelectPrev, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
         if self.rows.is_empty() {
             return;
         }
@@ -453,7 +622,11 @@ impl Browser {
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = files::display_name(&self.current);
+        let title = match &self.search {
+            Some(s) if s.scope == Scope::Folder => format!("Searching \u{201c}{}\u{201d}", files::display_name(&s.root)),
+            Some(_) => "Searching \u{201c}This PC\u{201d}".to_string(),
+            None => files::display_name(&self.current),
+        };
         let view_btn = |id: &'static str, name: &'static str, mode: ViewMode, cx: &mut Context<Self>| {
             tool_button(id, name, self.view == mode).on_click(cx.listener(move |this, _, _, cx| {
                 this.view = mode;
@@ -516,15 +689,64 @@ impl Browser {
     }
 
     /// The inspector column's own strip of toolbar: the search field.
-    fn search_bar(&self) -> impl IntoElement {
+    fn search_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.search_input.focus_handle(cx).is_focused(window);
+        let has_text = !self.search_input.read(cx).text().is_empty();
         div().h(px(t::TOOLBAR_H)).flex_none().flex().items_center().px(px(12.)).window_control_area(WindowControlArea::Drag).child(
             capsule("search")
                 .flex_1()
                 .px(px(10.))
-                .gap(px(4.))
+                .gap(px(5.))
+                .when(focused, |d| d.border_2().border_color(t::focus_ring()))
                 .child(sym("magnifyingglass", 13., t::text_secondary()))
-                .child(div().text_size(px(t::TEXT_SIZE)).text_color(t::text_tertiary()).child("Search")),
+                .child(self.search_input.clone())
+                .when(has_text, |d| {
+                    d.child(
+                        div()
+                            .id("clear-search")
+                            .child(sym("xmark.circle.fill", 13., t::text_tertiary()))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.end_search(cx);
+                                let h = this.search_input.focus_handle(cx);
+                                window.focus(&h, cx);
+                            })),
+                    )
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.focus_search(&FocusSearch, window, cx))),
         )
+    }
+
+    /// "Search: This PC | "Folder"", under the toolbar while searching.
+    fn scope_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = self.search.as_ref().expect("searching");
+        let button = |id: &'static str, label: String, on: bool, scope: Scope, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .px(px(9.))
+                .py(px(3.))
+                .rounded(px(6.))
+                .when(on, |d| d.bg(t::sidebar_selected()).text_color(t::text()).font_weight(gpui::FontWeight::SEMIBOLD))
+                .hover(|d| d.bg(t::glass_pressed()))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_scope(scope, cx)))
+        };
+        let plain = |id: &'static str, label: &'static str| div().id(id).px(px(9.)).py(px(3.)).rounded(px(6.)).hover(|d| d.bg(t::glass_pressed())).child(label);
+        div()
+            .h(px(32.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .px(px(14.))
+            .text_size(px(t::HEADER_SIZE))
+            .text_color(t::text_secondary())
+            .child(div().mr(px(4.)).child("Search:"))
+            .child(button("scope-pc", "This PC".into(), s.scope == Scope::ThisPc, Scope::ThisPc, cx))
+            .child(button("scope-folder", format!("\u{201c}{}\u{201d}", files::display_name(&s.root)), s.scope == Scope::Folder, Scope::Folder, cx))
+            .child(div().flex_1())
+            .child(plain("save-search", "Save"))
+            .child(plain("add-criteria", "+"))
     }
 
     fn column_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -564,6 +786,7 @@ impl Browser {
 
     fn render_rows(&mut self, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let focused = self.focus.is_focused(window);
+        let searching = self.search.is_some();
         range
             .map(|ix| {
                 // Past the last row: Finder keeps the stripes going.
@@ -622,7 +845,7 @@ impl Browser {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .when(r.entry.is_dir, |d| {
+                                            .when(r.entry.is_dir && !searching, |d| {
                                                 d.child(sym(if r.expanded { "chevron.down@semibold" } else { "chevron.right@semibold" }, 8., fg2)).on_click(
                                                     cx.listener(move |this, _, _, cx| {
                                                         cx.stop_propagation();
@@ -662,7 +885,12 @@ impl Browser {
     }
 
     fn path_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut crumbs: Vec<PathBuf> = self.current.ancestors().map(Path::to_path_buf).collect();
+        // While searching it shows where the selected result is.
+        let target = match &self.search {
+            Some(_) => self.selected.and_then(|i| self.rows.get(i)).map(|r| r.entry.path.clone()),
+            None => Some(self.current.clone()),
+        };
+        let mut crumbs: Vec<PathBuf> = target.iter().flat_map(|p| p.ancestors()).map(Path::to_path_buf).collect();
         crumbs.reverse();
         let n = crumbs.len();
         let mut bar = div()
@@ -690,7 +918,7 @@ impl Browser {
                         .flex_none()
                         .items_center()
                         .gap(px(4.))
-                        .child(img(if is_root { "icons/disk.svg" } else { "icons/folder.svg" }).size(px(14.)))
+                        .child(img(if is_root { "icons/disk.svg" } else if p.is_dir() { "icons/folder.svg" } else { "icons/file.svg" }).size(px(14.)))
                         .child(name)
                         .on_click(cx.listener(move |this, _, _, cx| this.navigate(p.clone(), cx))),
                 )
@@ -707,6 +935,28 @@ impl Browser {
             (1, None) => "1 item".to_string(),
             (n, None) => format!("{n} items"),
         };
+        if let Some(s) = &self.search {
+            let text = match (&s.error, s.took) {
+                (Some(e), _) => e.clone(),
+                (None, Some(took)) => {
+                    let n = self.rows.len();
+                    let plus = if s.capped { "+" } else { "" };
+                    let sel = if self.selected.is_some() { format!("1 of {n}{plus} selected") } else { format!("{n}{plus} items") };
+                    format!("{sel} \u{00b7} {:.1} ms", took.as_secs_f64() * 1e3)
+                }
+                (None, None) => "Searching\u{2026}".into(),
+            };
+            return div()
+                .h(px(t::STATUS_BAR_H))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t::bar_bg())
+                .text_size(px(t::SMALL_SIZE))
+                .text_color(t::text_secondary())
+                .child(text);
+        }
         let free = files::free_space(&self.current).map(|b| format!(", {} available", files::format_bytes(b))).unwrap_or_default();
         div()
             .h(px(t::STATUS_BAR_H))
@@ -721,7 +971,12 @@ impl Browser {
     }
 
     fn inspector(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let e = self.selected.and_then(|i| self.rows.get(i)).map(|r| r.entry.clone()).or_else(|| Entry::from_path(self.current.clone()));
+        // Search results carry only what the index knows: stat for the rest.
+        let e = self
+            .selected
+            .and_then(|i| self.rows.get(i))
+            .map(|r| if r.entry.created.is_none() { Entry::from_path(r.entry.path.clone()).unwrap_or_else(|| r.entry.clone()) } else { r.entry.clone() })
+            .or_else(|| Entry::from_path(self.current.clone()));
         let mut col = div().flex_1().min_h_0().flex().flex_col().px(px(16.)).pb(px(10.)).text_size(px(t::TEXT_SIZE));
         if let Some(e) = e {
             let info = |label: &'static str, value: String| {
@@ -812,6 +1067,8 @@ impl Render for Browser {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::go_up))
+            .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))
             .size_full()
@@ -835,6 +1092,7 @@ impl Render for Browser {
                             .flex()
                             .flex_col()
                             .child(self.toolbar(cx))
+                            .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
                             .child(self.list(window, cx))
                             .child(self.path_bar(cx))
                             .child(self.status_bar()),
@@ -849,7 +1107,7 @@ impl Render for Browser {
                             .bg(t::inspector_bg())
                             .border_l_1()
                             .border_color(t::separator())
-                            .child(self.search_bar())
+                            .child(self.search_bar(window, cx))
                             .child(self.inspector(cx)),
                     ),
             )

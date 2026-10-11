@@ -25,23 +25,22 @@ impl Entry {
     }
 
     fn new(name: String, path: PathBuf, m: &std::fs::Metadata) -> Entry {
-        let is_dir = m.is_dir();
+        let mut e = Entry::from_parts(name, path, m.is_dir(), m.len(), m.modified().ok());
+        e.created = m.created().ok();
+        e.accessed = m.accessed().ok();
+        e
+    }
+
+    /// An entry from what the index knows (search results): creation and
+    /// access times are left for `from_path`.
+    pub fn from_parts(name: String, path: PathBuf, is_dir: bool, size: u64, modified: Option<SystemTime>) -> Entry {
         let kind = kind_of(&name, is_dir).into();
         // Windows never shows a shortcut's extension.
         let name = match name.rsplit_once('.') {
             Some((stem, e)) if !is_dir && !stem.is_empty() && (e.eq_ignore_ascii_case("lnk") || e.eq_ignore_ascii_case("url")) => stem.to_string(),
             _ => name,
         };
-        Entry {
-            name: name.into(),
-            path,
-            is_dir,
-            size: if is_dir { 0 } else { m.len() },
-            modified: m.modified().ok(),
-            created: m.created().ok(),
-            accessed: m.accessed().ok(),
-            kind,
-        }
+        Entry { name: name.into(), path, is_dir, size: if is_dir { 0 } else { size }, modified, created: None, accessed: None, kind }
     }
 
     /// The icon asset for this entry.
@@ -49,7 +48,7 @@ impl Entry {
         if self.is_dir {
             return "icons/folder.svg";
         }
-        match ext(&self.name).as_str() {
+        match ext(&self.path.to_string_lossy()).as_str() {
             "exe" | "msi" | "app" | "lnk" => "icons/app.svg",
             _ => "icons/file.svg",
         }

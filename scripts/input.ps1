@@ -11,6 +11,7 @@ public static class In {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte s, int f, int e);
+  [DllImport("user32.dll")] public static extern short VkKeyScan(char c);
 }
 "@
 [In]::SetProcessDPIAware() | Out-Null
@@ -19,7 +20,7 @@ $p = Get-Process finder | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Ob
 Start-Sleep -Milliseconds 150
 $r = New-Object In+RECT
 [In]::DwmGetWindowAttribute($p.MainWindowHandle, 9, [ref]$r, 16) | Out-Null
-$vk = @{ down = 0x28; up = 0x26; left = 0x25; right = 0x27; enter = 0x0D; back = 0x08; ctrl = 0x11; alt = 0x12; esc = 0x1B; tab = 0x09 }
+$vk = @{ f = 0x46; a = 0x41; down = 0x28; up = 0x26; left = 0x25; right = 0x27; enter = 0x0D; back = 0x08; ctrl = 0x11; alt = 0x12; esc = 0x1B; tab = 0x09 }
 switch ($Action) {
   'move' { [In]::SetCursorPos($r.L + [int]$Rest[0], $r.T + [int]$Rest[1]) | Out-Null }
   'click' {
@@ -30,6 +31,15 @@ switch ($Action) {
     Start-Sleep -Milliseconds 120
     $n = if ($Rest.Count -gt 2 -and $Rest[2] -eq 'double') { 2 } else { 1 }
     for ($i = 0; $i -lt $n; $i++) { [In]::mouse_event(2, 0, 0, 0, 0); [In]::mouse_event(4, 0, 0, 0, 0); Start-Sleep -Milliseconds 40 }
+  }
+  'type' {
+    foreach ($ch in ($Rest -join ' ').ToCharArray()) {
+      $k = [In]::VkKeyScan($ch); $code = [byte]($k -band 0xFF); $shift = ($k -band 0x100) -ne 0
+      if ($shift) { [In]::keybd_event(0x10, 0, 0, 0) }
+      [In]::keybd_event($code, 0, 0, 0); [In]::keybd_event($code, 0, 2, 0)
+      if ($shift) { [In]::keybd_event(0x10, 0, 2, 0) }
+      Start-Sleep -Milliseconds 30
+    }
   }
   'key' {
     foreach ($k in $Rest) {

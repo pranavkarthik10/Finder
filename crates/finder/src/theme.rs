@@ -113,6 +113,14 @@ pub fn inspector_bg() -> Rgba {
 pub fn separator() -> Rgba {
     if dark() { rgba(0xFFFFFF1A) } else { rgba(0x00000017) }
 }
+/// Selected text in fields.
+pub fn text_selection() -> Rgba {
+    if dark() { rgba(0x3D9BFF55) } else { rgba(0x0A7AFF40) }
+}
+/// The ring around a focused field.
+pub fn focus_ring() -> Rgba {
+    if dark() { rgba(0x3D9BFF99) } else { rgba(0x0A7AFF80) }
+}
 pub fn bar_bg() -> Rgba {
     if dark() { rgb(0x232324) } else { rgb(0xF9F9F9) }
 }
