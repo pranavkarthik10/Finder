@@ -1536,6 +1536,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "raw-window-handle",
  "rust-embed",
  "unicode-segmentation",
  "windows 0.62.2",

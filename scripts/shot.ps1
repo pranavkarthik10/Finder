@@ -10,6 +10,10 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
@@ -22,5 +26,18 @@ $g = [System.Drawing.Graphics]::FromImage($bmp)
 $dc = $g.GetHdc()
 [W]::PrintWindow($p.MainWindowHandle, $dc, 2) | Out-Null  # PW_RENDERFULLCONTENT
 $g.ReleaseHdc($dc)
+# Popups the window owns (Quick Look's hosted previews), drawn where they sit.
+$owned = New-Object System.Collections.ArrayList
+[W]::EnumWindows({ param($hw, $l) if ([W]::GetWindow($hw, 4) -eq $p.MainWindowHandle -and [W]::IsWindowVisible($hw)) { [void]$owned.Add($hw) }; $true }, [IntPtr]::Zero) | Out-Null
+foreach ($hw in $owned) {
+  $o = New-Object W+RECT
+  [W]::GetWindowRect($hw, [ref]$o) | Out-Null
+  $ow = $o.R - $o.L; $oh = $o.B - $o.T
+  if ($ow -le 0 -or $oh -le 0) { continue }
+  $ob = New-Object System.Drawing.Bitmap $ow, $oh
+  $og = [System.Drawing.Graphics]::FromImage($ob)
+  $odc = $og.GetHdc(); [W]::PrintWindow($hw, $odc, 2) | Out-Null; $og.ReleaseHdc($odc)
+  $g.DrawImage($ob, $o.L - $r.L, $o.T - $r.T)
+}
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
 "$w x $h -> $Out"

@@ -8,6 +8,7 @@ mod clipboard;
 mod files;
 mod icons;
 mod ops;
+mod preview_host;
 mod text_input;
 mod theme;
 
@@ -79,10 +80,19 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    let hwnd = window.window_handle().ok().and_then(|h| match h.as_raw() {
+                        RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+                        _ => None,
+                    });
                     let view = cx.new(|cx| {
                         // Light/dark follows Windows, live.
                         cx.observe_window_appearance(window, |_, window, _| window.refresh()).detach();
-                        Browser::new(font, cx)
+                        // Quick Look's hosted previews follow the window.
+                        cx.observe_window_bounds(window, |_, window, _| window.refresh()).detach();
+                        let mut b = Browser::new(font, cx);
+                        b.hwnd = hwnd;
+                        b
                     });
                     window.focus(&view.focus_handle(cx), cx);
                     view

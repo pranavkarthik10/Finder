@@ -80,7 +80,17 @@ impl Browser {
         let vh = window.viewport_size().height / px(1.);
         let (w, h) = ((vw * 0.62).clamp(420., 1100.), (vh * 0.78).clamp(320., 900.));
         let x = &e.path;
-        let body: AnyElement = if e.is_dir {
+        // Body area (inset clear of the panel's rounded corners), in
+        // window points: where a hosted preview handler goes.
+        let (left, top) = ((vw - w) / 2., (vh - h) / 2.);
+        let area = (left + 6., top + 45., w - 12., h - 51.);
+        let hosted = !e.is_dir && !IMAGE.contains(&ext(x).as_str()) && !TEXT.contains(&ext(x).as_str()) && self.can_host(x);
+        let body: AnyElement = if hosted {
+            let path = x.clone();
+            let me = cx.entity();
+            cx.defer(move |cx| me.update(cx, |this, cx| this.sync_preview(Some((path, area)), cx)));
+            div().size_full().into_any_element()
+        } else if e.is_dir {
             self.ql_card(&e, cx)
         } else if IMAGE.contains(&ext(x).as_str()) {
             div().size_full().p(px(16.)).flex().child(img(x.clone()).flex_1().min_w_0().h_full().object_fit(gpui::ObjectFit::Contain)).into_any_element()
@@ -92,6 +102,10 @@ impl Browser {
         } else {
             self.ql_card(&e, cx)
         };
+        if !hosted && self.preview.is_some() {
+            let me = cx.entity();
+            cx.defer(move |cx| me.update(cx, |this, cx| this.sync_preview(None, cx)));
+        }
         let app = (!e.is_dir).then(|| default_app(x)).flatten();
         let header = div()
             .h(px(44.))
@@ -176,6 +190,42 @@ impl Browser {
             .with_priority(2)
             .into_any_element(),
         )
+    }
+
+    /// Whether a Windows preview handler shows this type (asked once per
+    /// extension; one that failed to load is remembered as no).
+    fn can_host(&mut self, p: &Path) -> bool {
+        let e = ext(p);
+        *self.hostable.entry(e).or_insert_with(|| crate::preview_host::can_preview(p))
+    }
+
+    /// Show `want` (path, area in window points) in a hosted preview
+    /// handler, or none. Runs after the frame, outside rendering.
+    pub(super) fn sync_preview(&mut self, want: Option<(PathBuf, (f32, f32, f32, f32))>, cx: &mut Context<Self>) {
+        let (Some((path, (x, y, w, h))), Some(owner)) = (want.filter(|_| self.quick_look), self.hwnd) else {
+            self.preview = None;
+            return;
+        };
+        let owner = windows::Win32::Foundation::HWND(owner as *mut _);
+        let k = self.scale;
+        let rect = windows::Win32::Foundation::RECT {
+            left: (x * k) as i32,
+            top: (y * k) as i32,
+            right: ((x + w) * k) as i32,
+            bottom: ((y + h) * k) as i32,
+        };
+        match &mut self.preview {
+            Some(p) if p.path == path => p.place(owner, rect),
+            _ => {
+                self.preview = None;
+                self.preview = crate::preview_host::PreviewHost::open(owner, &path, rect);
+                if self.preview.is_none() {
+                    // Fall back to the thumbnail for this type.
+                    self.hostable.insert(ext(&path), false);
+                    cx.notify();
+                }
+            }
+        }
     }
 
     /// The text of `e`, read off the UI thread the first time it's shown.

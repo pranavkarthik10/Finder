@@ -105,6 +105,13 @@ pub struct Browser {
     quick_look: bool,
     /// Quick Look's text of the item it shows.
     peek: Option<quicklook::Peek>,
+    /// Quick Look's Windows preview handler, for PDFs, video, Office...
+    preview: Option<crate::preview_host::PreviewHost>,
+    /// Extensions a preview handler takes.
+    hostable: HashMap<String, bool>,
+    /// Our window (for hosting preview handlers) and its scale factor.
+    pub hwnd: Option<isize>,
+    scale: f32,
 }
 
 /// How to reverse a file operation.
@@ -221,6 +228,10 @@ impl Browser {
             undo: Vec::new(),
             quick_look: false,
             peek: None,
+            preview: None,
+            hostable: HashMap::new(),
+            hwnd: None,
+            scale: 1.,
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Cancelled, cx| this.end_search(cx)).detach();
@@ -1571,6 +1582,11 @@ impl Render for Browser {
             _ => matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark),
         };
         t::set_dark(dark);
+        self.scale = window.scale_factor();
+        if !self.quick_look && self.preview.is_some() {
+            let me = cx.entity();
+            cx.defer(move |cx| me.update(cx, |this, cx| this.sync_preview(None, cx)));
+        }
         div()
             .id("browser")
             .key_context("Browser")
