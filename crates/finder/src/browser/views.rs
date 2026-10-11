@@ -139,8 +139,8 @@ impl Browser {
             let e = self.rows[ix].entry.clone();
             let src = self.icon_source(&e, 128, cx);
             let sel = self.is_selected(ix);
-            let pictured = !e.is_dir && icons::has_thumbnail(&e.path);
             let rename = self.rename_box(&e.path);
+            let drag = self.drag_value(&e, sel, cx);
             row = row.child(
                 div()
                     .id(("cell", ix))
@@ -178,7 +178,9 @@ impl Browser {
                         window.focus(&this.focus, cx);
                         if ev.click_count() >= 2 { this.open_row(ix, cx) } else { this.click_select(ix, &ev.modifiers(), cx) }
                     }))
-                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx))),
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx)))
+                    .map(|el| dnd::drag_source(el, drag))
+                    .when(e.is_dir, |el| dnd::folder_target(el, e.path.clone(), cx)),
             );
         }
         row.into_any_element()
@@ -229,6 +231,7 @@ impl Browser {
                 let e = self.columns[k].entries[ix].clone();
                 let src = self.icon_source(&e, 32, cx);
                 let sel = self.columns[k].sel == Some(ix);
+                let drag = self.drag_value(&e, false, cx);
                 let (fg, fg2): (gpui::Hsla, gpui::Hsla) =
                     if sel && active { (gpui::white(), gpui::white().opacity(0.85)) } else { (t::text().into(), t::text_secondary().into()) };
                 let row = div()
@@ -252,7 +255,9 @@ impl Browser {
                         if ev.click_count() >= 2 {
                             this.col_open(cx);
                         }
-                    }));
+                    }))
+                    .map(|el| dnd::drag_source(el, drag))
+                    .when(e.is_dir, |el| dnd::folder_target(el, e.path.clone(), cx));
                 div().w_full().px(px(6.)).flex().child(row).into_any_element()
             })
             .collect()
@@ -385,7 +390,7 @@ impl Browser {
             let e = self.rows[i].entry.clone();
             let src = self.icon_source(&e, 128, cx);
             let sel = self.selected == Some(i);
-            let pictured = !e.is_dir && icons::has_thumbnail(&e.path);
+            let drag = self.drag_value(&e, self.is_selected(i), cx);
             strip = strip.child(
                 div()
                     .id(("tile", i))
@@ -409,7 +414,8 @@ impl Browser {
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         window.focus(&this.focus, cx);
                         if ev.click_count() >= 2 { this.open_row(i, cx) } else { this.select(i, cx) }
-                    })),
+                    }))
+                    .map(|el| dnd::drag_source(el, drag)),
             );
         }
         strip = strip.child(div().w(px((n - last) as f32 * TILE)).h(px(1.)).flex_none());

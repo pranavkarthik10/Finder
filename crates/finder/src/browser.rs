@@ -8,6 +8,7 @@ use crate::ops;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
 
+mod dnd;
 mod menu;
 mod views;
 use gpui::{
@@ -1002,6 +1003,7 @@ impl Browser {
                         .when(on, |d| d.bg(t::sidebar_selected()))
                         .child(div().w(px(22.)).flex().justify_center().child(sym(p.icon, t::SIDEBAR_SYMBOL, tint)))
                         .child(div().text_size(px(t::TEXT_SIZE)).when(on, |d| d.text_color(t::accent())).truncate().child(p.name.clone()))
+                        .when_some(p.path.clone(), |el, dest| dnd::folder_target(el, dest, cx))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if let Some(p) = &path {
                                 this.navigate(p.clone(), cx);
@@ -1230,8 +1232,9 @@ impl Browser {
                 }
                 let entry = self.rows[ix].entry.clone();
                 let src = self.icon_source(&entry, 32, cx);
-                let r = &self.rows[ix];
                 let sel = self.is_selected(ix);
+                let drag = self.drag_value(&entry, sel, cx);
+                let r = &self.rows[ix];
                 let lit = sel && focused;
                 let rename = self.rename_box(&entry.path);
                 let (fg, fg2): (gpui::Hsla, gpui::Hsla) =
@@ -1296,7 +1299,9 @@ impl Browser {
                                     this.click_select(ix, &e.modifiers(), cx);
                                 }
                             }))
-                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx))),
+                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| this.open_menu(Some(ix), e.position, window, cx)))
+                            .map(|el| dnd::drag_source(el, drag))
+                            .when(entry.is_dir, |el| dnd::folder_target(el, entry.path.clone(), cx)),
                     )
                     .into_any_element()
             })
@@ -1350,6 +1355,7 @@ impl Browser {
                         .gap(px(4.))
                         .child(img(if is_root { "icons/disk.svg" } else if p.is_dir() { "icons/folder.svg" } else { "icons/file.svg" }).size(px(14.)))
                         .child(name)
+                        .when(p.is_dir(), |el| dnd::folder_target(el, p.clone(), cx))
                         .on_click(cx.listener(move |this, _, _, cx| this.navigate(p.clone(), cx))),
                 )
                 .when(i + 1 < n, |d| d.child(sym("chevron.right@semibold", 7., t::text_tertiary())));
@@ -1552,7 +1558,11 @@ impl Render for Browser {
                             .flex_col()
                             .child(self.toolbar(cx))
                             .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
-                            .child(self.main_view(window, cx))
+                            .child({
+                                let view = self.main_view(window, cx);
+                                let el = div().id("view-drop").flex_1().min_h_0().flex().flex_col().child(view);
+                                if self.search.is_none() { dnd::folder_target(el, self.current.clone(), cx).into_any_element() } else { el.into_any_element() }
+                            })
                             .child(self.path_bar(cx))
                             .child(self.status_bar()),
                     )

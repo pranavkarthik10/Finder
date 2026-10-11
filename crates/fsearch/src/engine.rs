@@ -498,6 +498,7 @@ fn wait_for_index(dir: &Path) -> Index {
     }
 }
 
+#[cfg(not(windows))]
 #[rustfmt::skip]
 const GATED_IN_HOME: &[&str] = &[
     "Desktop", "Documents", "Downloads", "Library/Mobile Documents", "Library/Containers", "Library/Group Containers",

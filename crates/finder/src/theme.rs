@@ -164,6 +164,10 @@ pub fn glass_shadow() -> Vec<BoxShadow> {
         BoxShadow { color: hsla(0., 0., 0., 0.04), offset: point(px(0.), px(0.)), blur_radius: px(1.), spread_radius: px(0.), inset: false },
     ]
 }
+/// A folder something is being dragged over.
+pub fn drop_target() -> Rgba {
+    if dark() { rgba(0x3D9BFF40) } else { rgba(0x0A7AFF2E) }
+}
 pub fn menu_bg() -> Rgba {
     if dark() { rgba(0x2C2C2EF5) } else { rgba(0xFAFAFAF5) }
 }
