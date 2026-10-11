@@ -3,6 +3,7 @@
 use crate::files::{self, Entry, SortKey};
 use crate::assets::symbol;
 use crate::icons;
+use crate::clipboard;
 use crate::ops;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath]
 );
 
 /// Most results a search shows.
@@ -465,6 +466,65 @@ impl Browser {
             });
         })
         .detach();
+    }
+
+    fn copy_files(&mut self, _: &CopyFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.put_on_clipboard(false, window, cx);
+    }
+
+    fn cut_files(&mut self, _: &CutFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.put_on_clipboard(true, window, cx);
+    }
+
+    fn put_on_clipboard(&mut self, cut: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.selection();
+        if !self.focus.is_focused(window) || paths.is_empty() {
+            return;
+        }
+        self.notice = clipboard::put_files(&paths, cut).err();
+        cx.notify();
+    }
+
+    /// Paste into the current folder: copies, or moves what was cut.
+    /// Copies into the folder they came from are named like Finder's
+    /// ("name copy"), not Explorer's ("name - Copy").
+    fn paste_files(&mut self, _: &PasteFiles, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) || self.search.is_some() {
+            return;
+        }
+        let Some((from, cut)) = clipboard::get_files() else { return };
+        let dir = self.current.clone();
+        let (same, other): (Vec<PathBuf>, Vec<PathBuf>) = from.into_iter().partition(|p| p.parent() == Some(dir.as_path()));
+        if cut && other.is_empty() {
+            return; // already here
+        }
+        let copies: Vec<PathBuf> = if cut { Vec::new() } else { same.iter().map(|p| ops::copy_name(p)).collect() };
+        let mut after: Vec<PathBuf> = other.iter().filter_map(|p| p.file_name().map(|n| dir.join(n))).collect();
+        after.extend(copies.iter().cloned());
+        self.run_op(
+            move || {
+                if cut {
+                    ops::run(ops::Op::Move, &other, Some(&dir))?;
+                    clipboard::clear();
+                } else {
+                    ops::run(ops::Op::Copy, &other, Some(&dir))?;
+                    ops::copy_as(&same, &copies)?;
+                }
+                Ok(())
+            },
+            after,
+            cx,
+        );
+    }
+
+    /// The selected paths as text (Finder's Option-Command-C).
+    fn copy_path(&mut self, _: &CopyPath, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.selection();
+        if !self.focus.is_focused(window) || paths.is_empty() {
+            return;
+        }
+        let text = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\r\n");
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
     }
 
     fn trash(&mut self, _: &Trash, window: &mut Window, cx: &mut Context<Self>) {
@@ -1449,6 +1509,10 @@ impl Render for Browser {
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::duplicate))
             .on_action(cx.listener(Self::trash))
+            .on_action(cx.listener(Self::copy_files))
+            .on_action(cx.listener(Self::cut_files))
+            .on_action(cx.listener(Self::paste_files))
+            .on_action(cx.listener(Self::copy_path))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))

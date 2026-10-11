@@ -4,13 +4,14 @@
 
 mod assets;
 mod browser;
+mod clipboard;
 mod files;
 mod icons;
 mod ops;
 mod text_input;
 mod theme;
 
-use browser::{Browser, Collapse, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, Rename, SelectAll, SelectNext, SelectPrev, Trash};
+use browser::{Browser, Collapse, CopyFiles, CopyPath, CutFiles, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, PasteFiles, Rename, SelectAll, SelectNext, SelectPrev, Trash};
 use gpui::{
     App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
@@ -41,6 +42,10 @@ fn main() {
             KeyBinding::new("ctrl-d", Duplicate, Some("Browser")),
             KeyBinding::new("delete", Trash, Some("Browser")),
             KeyBinding::new("ctrl-backspace", Trash, Some("Browser")),
+            KeyBinding::new("ctrl-c", CopyFiles, Some("Browser")),
+            KeyBinding::new("ctrl-x", CutFiles, Some("Browser")),
+            KeyBinding::new("ctrl-v", PasteFiles, Some("Browser")),
+            KeyBinding::new("ctrl-alt-c", CopyPath, Some("Browser")),
             KeyBinding::new("enter", text_input::Confirm, Some("TextInput")),
             KeyBinding::new("escape", text_input::Cancel, Some("TextInput")),
             // The search field (Ctrl stands in for Command).
