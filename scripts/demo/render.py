@@ -20,7 +20,7 @@ CURSOR = (110, 156, 255)
 ENGINES = [
     ("fsearch", "fsearch", (120, 220, 130)),
     ("everything", "Everything 1.4", (245, 177, 76)),
-    ("windows", "Windows Search", (255, 107, 107)),
+    ("windows", "Windows Search", (255, 107, 107)),  # substring (LIKE), as the others match
 ]
 
 MONO = "C:/Windows/Fonts/CascadiaMono.ttf"
@@ -134,12 +134,18 @@ def typing_scene(item):
             # Histogram of keystroke latencies so far, on one scale for all
             # three engines (so the difference shows).
             times = [steps[m][key]["ms"] for m in range(k)]
-            top = max(st[e]["ms"] for st in steps for e, _, _ in ENGINES) or 1
+            # Scaled to typical keystrokes (an engine's first, one-letter
+            # keystroke can be an outlier); taller bars are clipped and marked.
+            meds = [sorted(st[e]["ms"] for st in steps)[n // 2] for e, _, _ in ENGINES]
+            top = 2.5 * max(meds) or 1
             hx, hy, hh = cx, y + 420, 120
             bw = max(4, int((colw - 40) / max(n, 1)) - 4)
             for m, t in enumerate(times):
-                bh = max(3, int(hh * t / top))
-                d.rectangle((hx + m * (bw + 4), hy + hh - bh, hx + m * (bw + 4) + bw, hy + hh), fill=color)
+                bh = max(3, min(hh, int(hh * t / top)))
+                bx = hx + m * (bw + 4)
+                d.rectangle((bx, hy + hh - bh, bx + bw, hy + hh), fill=color)
+                if t > top:
+                    d.polygon([(bx, hy - 4), (bx + bw, hy - 4), (bx + bw / 2, hy - 12)], fill=color)
             med = sorted(times)[len(times) // 2]
             d.text((cx, hy + hh + 12), f"median {fmt_ms(med)}", font=F["small"], fill=color)
     return n * per + hold, draw
@@ -147,8 +153,9 @@ def typing_scene(item):
 
 def bars_scene():
     bench = data["bench"]
+    rows = ENGINES + [("windows_prefix", "Windows Search*", (190, 110, 110))]
     med = {}
-    for key, _, _ in ENGINES:
+    for key, _, _ in rows:
         ts = sorted(b[key]["ms"] for b in bench)
         med[key] = ts[len(ts) // 2]
     chrome = next((b for b in bench if b["query"] == "chrome.exe"), bench[0])
@@ -158,10 +165,10 @@ def bars_scene():
         d.text((x, y - 6), "Find a file by name", font=F["bold"], fill=TEXT)
         d.text((x + 260, y - 4), f"median of {len(bench)} queries \u00b7 top 50 with paths \u00b7 warm", font=F["small"], fill=DIM)
         t = ease(f / 30)
-        full = W - 120 - 420
+        full = W - 120 - 700  # room for the labels after the longest bar
         top = max(med.values())
-        for i, (key, label, color) in enumerate(ENGINES):
-            yy = y + 60 + i * 70
+        for i, (key, label, color) in enumerate(rows):
+            yy = y + 60 + i * 62
             d.text((x, yy + 6), label, font=F["body"], fill=TEXT)
             bw = max(6, int(full * med[key] / top * t))
             d.rectangle((x + 200, yy, x + 200 + bw, yy + 36), fill=color)
@@ -169,10 +176,12 @@ def bars_scene():
             d.text((x + 214 + bw, yy + 6), label_ms, font=F["bold"], fill=color)
             if key != "fsearch" and t >= 1:
                 d.text((x + 214 + bw + d.textlength(label_ms + "  ", font=F["bold"]), yy + 6), f"{med[key] / med['fsearch']:.0f}\u00d7 slower", font=F["body"], fill=DIM)
+        if t >= 1:
+            d.text((x, y + 310), "* word-prefix index lookup: faster, but only matches the start of words (no “ome.ex”)", font=F["small"], fill=DIM)
         # Coverage: what each finds for chrome.exe.
         t2 = ease((f - 45) / 25)
         if t2 > 0:
-            yy = y + 330
+            yy = y + 370
             d.text((x, yy), f"Results for \u201c{chrome['query']}\u201d", font=F["bold"], fill=TEXT)
             for i, (key, label, color) in enumerate(ENGINES):
                 n = chrome[key]["n"]

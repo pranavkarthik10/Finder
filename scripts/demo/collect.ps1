@@ -42,12 +42,20 @@ function Everything([string]$q) {
     @(for ($i = 0; $i -lt $n; $i++) { [void][Ev]::Everything_GetResultFullPathNameW($i, $sb, 1024); $sb.ToString() })
 }
 
-# Windows Search: word-prefix full-text match on names, as Explorer's box does.
+# Windows Search: substring match on names (the same question the others
+# answer), and word-prefix full-text lookup (cheaper, but it only matches the
+# start of words; roughly what Explorer's box does).
 $conn = New-Object -ComObject ADODB.Connection
 $conn.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
-function WinSearch([string]$q) {
+function WinSearchPrefix([string]$q) {
     $e = $q.Replace("'", "''")
     $rs = $conn.Execute("SELECT TOP 50 System.ItemPathDisplay FROM SYSTEMINDEX WHERE SCOPE='file:' AND CONTAINS(System.FileName, '""$e*""')")
+    $out = @(while (-not $rs.EOF) { $rs.Fields.Item(0).Value; $rs.MoveNext() })
+    $rs.Close(); $out
+}
+function WinSearch([string]$q) {
+    $e = $q.Replace("'", "''")
+    $rs = $conn.Execute("SELECT TOP 50 System.ItemPathDisplay FROM SYSTEMINDEX WHERE SCOPE='file:' AND System.FileName LIKE '%$e%'")
     $out = @(while (-not $rs.EOF) { $rs.Fields.Item(0).Value; $rs.MoveNext() })
     $rs.Close(); $out
 }
@@ -79,6 +87,7 @@ $benchOut = [System.Collections.Generic.List[object]]::new()
 foreach ($q in $Bench) {
     $r = @{ query = $q }
     foreach ($e in $engines.Keys) { $r[$e] = Time $engines[$e] $q 21 }
+    $r['windows_prefix'] = Time ${function:WinSearchPrefix} $q 21
     $benchOut.Add($r)
 }
 $entries = (& (Join-Path $root 'target/release/fsearch.exe') status | ConvertFrom-Json).entries
