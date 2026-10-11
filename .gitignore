@@ -1,2 +1,3 @@
 /target
 *.pdb
+/crates/finder/assets/__pycache__

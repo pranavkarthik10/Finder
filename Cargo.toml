@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fsearch"]
+members = ["crates/fsearch", "crates/finder"]
 
 [profile.release]
 opt-level = 3
