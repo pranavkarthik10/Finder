@@ -138,8 +138,9 @@ impl Browser {
         for ix in r * cols..((r + 1) * cols).min(self.rows.len()) {
             let e = self.rows[ix].entry.clone();
             let src = self.icon_source(&e, 128, cx);
-            let sel = self.selected == Some(ix);
+            let sel = self.is_selected(ix);
             let pictured = !e.is_dir && icons::has_thumbnail(&e.path);
+            let rename = self.rename_box(&e.path);
             row = row.child(
                 div()
                     .id(("cell", ix))
@@ -159,7 +160,8 @@ impl Browser {
                             .when(sel, |d| d.bg(t::icon_selected()))
                             .child(img(src).size(px(ICON)).object_fit(gpui::ObjectFit::Contain)),
                     )
-                    .child(
+                    .children(rename)
+                    .when(self.renaming.as_ref().is_none_or(|r| r.path != e.path), |d| d.child(
                         div()
                             .max_w(px(CELL_W))
                             .px(px(5.))
@@ -171,10 +173,10 @@ impl Browser {
                             .when(sel, |d| d.bg(if focused { t::selection() } else { t::selection_inactive() }))
                             .when(sel && focused, |d| d.text_color(gpui::white()))
                             .child(icon_label(&e.name)),
-                    )
+                    ))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         window.focus(&this.focus, cx);
-                        if ev.click_count() >= 2 { this.open_row(ix, cx) } else { this.select(ix, cx) }
+                        if ev.click_count() >= 2 { this.open_row(ix, cx) } else { this.click_select(ix, &ev.modifiers(), cx) }
                     })),
             );
         }

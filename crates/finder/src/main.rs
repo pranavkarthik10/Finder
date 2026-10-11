@@ -6,10 +6,11 @@ mod assets;
 mod browser;
 mod files;
 mod icons;
+mod ops;
 mod text_input;
 mod theme;
 
-use browser::{Browser, Collapse, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, Open, SelectNext, SelectPrev};
+use browser::{Browser, Collapse, Duplicate, EndSearch, Expand, FocusSearch, GoBack, GoForward, GoUp, NewFolder, Open, Rename, SelectAll, SelectNext, SelectPrev, Trash};
 use gpui::{
     App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
@@ -34,6 +35,14 @@ fn main() {
             KeyBinding::new("backspace", GoBack, Some("Browser")),
             KeyBinding::new("ctrl-f", FocusSearch, Some("Browser")),
             KeyBinding::new("escape", EndSearch, Some("Browser")),
+            KeyBinding::new("ctrl-a", SelectAll, Some("Browser")),
+            KeyBinding::new("f2", Rename, Some("Browser")),
+            KeyBinding::new("ctrl-shift-n", NewFolder, Some("Browser")),
+            KeyBinding::new("ctrl-d", Duplicate, Some("Browser")),
+            KeyBinding::new("delete", Trash, Some("Browser")),
+            KeyBinding::new("ctrl-backspace", Trash, Some("Browser")),
+            KeyBinding::new("enter", text_input::Confirm, Some("TextInput")),
+            KeyBinding::new("escape", text_input::Cancel, Some("TextInput")),
             // The search field (Ctrl stands in for Command).
             KeyBinding::new("backspace", text_input::Backspace, Some("TextInput")),
             KeyBinding::new("delete", text_input::Delete, Some("TextInput")),
@@ -71,7 +80,18 @@ fn main() {
                 },
             )
             .expect("open window");
-        let _ = window;
+        // FINDER_ACTIONS="finder::NewFolder,..." dispatches actions at
+        // startup (testing without driving the keyboard).
+        if let Ok(list) = std::env::var("FINDER_ACTIONS") {
+            for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                match cx.build_action(name, None) {
+                    Ok(action) => {
+                        let _ = window.update(cx, |_, window, cx| window.dispatch_action(action, cx));
+                    }
+                    Err(e) => eprintln!("FINDER_ACTIONS: {name}: {e}"),
+                }
+            }
+        }
         cx.activate(true);
     });
 }

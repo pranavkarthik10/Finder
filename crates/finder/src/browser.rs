@@ -3,6 +3,7 @@
 use crate::files::{self, Entry, SortKey};
 use crate::assets::symbol;
 use crate::icons;
+use crate::ops;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
 
@@ -12,12 +13,15 @@ use gpui::{
     ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, WindowControlArea, actions, div, img,
     prelude::*, px, svg, uniform_list,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-actions!(finder, [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch]);
+actions!(
+    finder,
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash]
+);
 
 /// Most results a search shows.
 const SEARCH_LIMIT: usize = 1000;
@@ -82,6 +86,20 @@ pub struct Browser {
     strip_width: f32,
     /// Icon view: cells per row (last laid out).
     grid_cols: usize,
+    /// Rows selected besides `selected` (the cursor), by Ctrl/Shift-click.
+    marked: BTreeSet<usize>,
+    /// Where a Shift-click range starts.
+    anchor: Option<usize>,
+    /// The name being edited in place.
+    renaming: Option<Renaming>,
+    /// The last operation's failure, shown in the status bar.
+    notice: Option<String>,
+}
+
+struct Renaming {
+    path: PathBuf,
+    input: gpui::Entity<TextInput>,
+    _subs: Vec<gpui::Subscription>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -173,8 +191,13 @@ impl Browser {
             strip_scroll: gpui::ScrollHandle::new(),
             strip_width: 600.,
             grid_cols: 1,
+            marked: BTreeSet::new(),
+            anchor: None,
+            renaming: None,
+            notice: None,
         };
         cx.subscribe(&b.search_input, |this, _, _: &text_input::Changed, cx| this.query_changed(cx)).detach();
+        cx.subscribe(&b.search_input, |this, _, _: &text_input::Cancelled, cx| this.end_search(cx)).detach();
         cx.subscribe(&b.search_input, |this, _, _: &text_input::BackspaceAtStart, cx| {
             if this.chips.pop().is_some() {
                 this.query_changed(cx);
@@ -217,6 +240,8 @@ impl Browser {
         }
         self.current = dir;
         self.selected = None;
+        self.marked.clear();
+        self.anchor = None;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
@@ -352,6 +377,213 @@ impl Browser {
         e.icon().into()
     }
 
+    // Selection
+
+    pub(crate) fn is_selected(&self, ix: usize) -> bool {
+        self.selected == Some(ix) || self.marked.contains(&ix)
+    }
+
+    /// Selected paths, in row order.
+    fn selection(&self) -> Vec<PathBuf> {
+        if self.shown_view() == ViewMode::Columns {
+            return self.selected_entry().map(|e| e.path).into_iter().collect();
+        }
+        let mut ix: BTreeSet<usize> = self.marked.clone();
+        ix.extend(self.selected);
+        ix.into_iter().filter_map(|i| self.rows.get(i)).map(|r| r.entry.path.clone()).collect()
+    }
+
+    /// A click: plain selects, Ctrl toggles, Shift selects a range.
+    fn click_select(&mut self, ix: usize, m: &gpui::Modifiers, cx: &mut Context<Self>) {
+        if m.control {
+            if self.is_selected(ix) {
+                self.marked.remove(&ix);
+                if self.selected == Some(ix) {
+                    self.selected = self.marked.pop_last();
+                }
+            } else {
+                self.marked.extend(self.selected);
+                self.selected = Some(ix);
+            }
+            self.anchor = Some(ix);
+            cx.notify();
+        } else if m.shift {
+            let a = self.anchor.unwrap_or(ix);
+            self.marked = (a.min(ix)..=a.max(ix)).filter(|&i| i != ix).collect();
+            self.selected = Some(ix);
+            cx.notify();
+        } else {
+            self.select(ix, cx);
+        }
+    }
+
+    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let cur = self.selected.unwrap_or(0);
+        self.selected = Some(cur);
+        self.marked = (0..self.rows.len()).filter(|&i| i != cur).collect();
+        cx.notify();
+    }
+
+    // File operations
+
+    /// Re-read the folder, keeping folders opened in place, then select
+    /// `select` (if they're there).
+    fn refresh(&mut self, select: &[PathBuf], cx: &mut Context<Self>) {
+        if self.search.is_some() {
+            return;
+        }
+        let expanded: Vec<PathBuf> = self.rows.iter().filter(|r| r.expanded).map(|r| r.entry.path.clone()).collect();
+        let cur = self.current.clone();
+        self.load(cur);
+        for p in expanded {
+            if let Some(i) = self.rows.iter().position(|r| r.entry.path == p) {
+                self.expand(i);
+            }
+        }
+        let found: Vec<usize> = select.iter().filter_map(|p| self.rows.iter().position(|r| r.entry.path == *p)).collect();
+        if let Some((&last, rest)) = found.split_last() {
+            self.selected = Some(last);
+            self.marked = rest.iter().copied().collect();
+            self.reveal(last);
+        }
+        self.columns.clear();
+        cx.notify();
+    }
+
+    /// Run `op` off the UI thread (shell operations show their own
+    /// progress and prompts), then refresh selecting `after`.
+    fn run_op(&mut self, op: impl FnOnce() -> Result<(), String> + Send + 'static, after: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.notice = None;
+        cx.spawn(async move |this, cx| {
+            let res = cx.background_spawn(async move { op() }).await;
+            let _ = this.update(cx, |b, cx| {
+                b.notice = res.err();
+                b.refresh(&after, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn trash(&mut self, _: &Trash, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let paths = self.selection();
+        if paths.is_empty() {
+            return;
+        }
+        // Land on the row after the last one removed.
+        let next = self.selected.and_then(|i| self.rows.iter().skip(i).find(|r| !paths.contains(&r.entry.path))).map(|r| r.entry.path.clone());
+        self.run_op(move || ops::run(ops::Op::Recycle, &paths, None), next.into_iter().collect(), cx);
+    }
+
+    fn duplicate(&mut self, _: &Duplicate, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let from = self.selection();
+        let to: Vec<PathBuf> = from.iter().map(|p| ops::copy_name(p)).collect();
+        if from.is_empty() {
+            return;
+        }
+        let after = to.clone();
+        self.run_op(move || ops::copy_as(&from, &to), after, cx);
+    }
+
+    fn new_folder(&mut self, _: &NewFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.is_some() {
+            return;
+        }
+        match ops::new_folder(&self.current) {
+            Ok(p) => {
+                self.refresh(std::slice::from_ref(&p), cx);
+                self.start_rename(p, window, cx);
+            }
+            Err(e) => {
+                self.notice = Some(e);
+                cx.notify();
+            }
+        }
+    }
+
+    fn rename_action(&mut self, _: &Rename, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) || !matches!(self.shown_view(), ViewMode::List | ViewMode::Icons) {
+            return;
+        }
+        if let Some(e) = self.selected_entry() {
+            self.start_rename(e.path, window, cx);
+        }
+    }
+
+    /// Edit a name in place: Enter or clicking away saves, Escape doesn't.
+    fn start_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // Finder selects the name without its extension.
+        let stem = match name.rfind('.') {
+            Some(i) if i > 0 && !path.is_dir() => i,
+            _ => name.len(),
+        };
+        let input = cx.new(|cx| {
+            let mut i = TextInput::new("", cx);
+            i.set_text(name, cx);
+            i.select_range(0..stem, cx);
+            i
+        });
+        let subs = vec![
+            cx.subscribe_in(&input, window, |this, _, _: &text_input::Confirmed, window, cx| this.finish_rename(true, window, cx)),
+            cx.subscribe_in(&input, window, |this, _, _: &text_input::Cancelled, window, cx| this.finish_rename(false, window, cx)),
+            cx.on_blur(&input.focus_handle(cx), window, |this, window, cx| this.finish_rename(true, window, cx)),
+        ];
+        window.focus(&input.focus_handle(cx), cx);
+        self.renaming = Some(Renaming { path, input, _subs: subs });
+        cx.notify();
+    }
+
+    fn finish_rename(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.renaming.take() else { return };
+        window.focus(&self.focus, cx);
+        let name = r.input.read(cx).text().to_string();
+        let unchanged = r.path.file_name().is_some_and(|n| n.to_string_lossy() == name);
+        if !save || unchanged {
+            cx.notify();
+            return;
+        }
+        match ops::rename(&r.path, &name) {
+            Ok(to) => {
+                self.notice = None;
+                self.refresh(&[to], cx);
+            }
+            Err(e) => {
+                self.notice = Some(e);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The box a name is edited in, in place of the name.
+    fn rename_box(&self, path: &Path) -> Option<AnyElement> {
+        let r = self.renaming.as_ref().filter(|r| r.path == path)?;
+        Some(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(18.))
+                .px(px(3.))
+                .flex()
+                .items_center()
+                .rounded(px(3.))
+                .bg(t::content_bg())
+                .border_1()
+                .border_color(t::focus_ring())
+                .text_color(t::text())
+                .child(r.input.clone())
+                .into_any_element(),
+        )
+    }
+
     // Search
 
     fn query_changed(&mut self, cx: &mut Context<Self>) {
@@ -433,6 +665,7 @@ impl Browser {
                 }
                 self.rows = v.into_iter().map(|entry| Row { entry, depth: 0, expanded: false }).collect();
                 self.selected = None;
+                self.marked.clear();
                 self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             }
             Err(e) => {
@@ -491,6 +724,8 @@ impl Browser {
 
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected = Some(ix);
+        self.marked.clear();
+        self.anchor = Some(ix);
         self.reveal(ix);
         cx.notify();
     }
@@ -931,8 +1166,9 @@ impl Browser {
                 let entry = self.rows[ix].entry.clone();
                 let src = self.icon_source(&entry, 32, cx);
                 let r = &self.rows[ix];
-                let sel = self.selected == Some(ix);
+                let sel = self.is_selected(ix);
                 let lit = sel && focused;
+                let rename = self.rename_box(&entry.path);
                 let (fg, fg2): (gpui::Hsla, gpui::Hsla) =
                     if lit { (gpui::white(), gpui::white().opacity(0.85)) } else { (t::text().into(), t::text_secondary().into()) };
                 let indent = r.depth as f32 * t::INDENT;
@@ -979,7 +1215,10 @@ impl Browser {
                                             }),
                                     )
                                     .child(img(src).size(px(t::ROW_ICON)).flex_none().ml(px(2.)).mr(px(6.)))
-                                    .child(div().flex_1().min_w_0().truncate().child(r.entry.name.clone())),
+                                    .child(match rename {
+                                        Some(b) => b,
+                                        None => div().flex_1().min_w_0().truncate().child(r.entry.name.clone()).into_any_element(),
+                                    }),
                             )
                             .child(div().w(px(t::DATE_W)).px(px(9.)).truncate().text_color(fg2).child(files::format_date(r.entry.modified)))
                             .child(div().w(px(t::SIZE_W)).px(px(9.)).flex().justify_end().text_color(fg2).child(files::format_size(&r.entry)))
@@ -989,7 +1228,7 @@ impl Browser {
                                 if e.click_count() >= 2 {
                                     this.open_row(ix, cx);
                                 } else {
-                                    this.select(ix, cx);
+                                    this.click_select(ix, &e.modifiers(), cx);
                                 }
                             })),
                     )
@@ -1055,8 +1294,21 @@ impl Browser {
     /// "24 items, 58.9 GB available".
     fn status_bar(&self) -> impl IntoElement {
         let n = self.rows.iter().filter(|r| r.depth == 0).count();
+        if let Some(e) = &self.notice {
+            return div()
+                .h(px(t::STATUS_BAR_H))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t::bar_bg())
+                .text_size(px(t::SMALL_SIZE))
+                .text_color(gpui::rgb(0xE5484D))
+                .child(e.clone());
+        }
+        let picked = self.selection().len();
         let items = match (n, self.selected_entry().map(|_| ())) {
-            (n, Some(_)) => format!("1 of {n} selected"),
+            (n, Some(_)) => format!("{picked} of {n} selected"),
             (1, None) => "1 item".to_string(),
             (n, None) => format!("{n} items"),
         };
@@ -1192,6 +1444,11 @@ impl Render for Browser {
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::rename_action))
+            .on_action(cx.listener(Self::new_folder))
+            .on_action(cx.listener(Self::duplicate))
+            .on_action(cx.listener(Self::trash))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx)))
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx)))

@@ -27,6 +27,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Confirm,
+        Cancel,
     ]
 );
 
@@ -35,6 +37,12 @@ pub struct Changed;
 
 /// Backspace with the cursor at the start: nothing of ours to delete.
 pub struct BackspaceAtStart;
+
+/// Enter.
+pub struct Confirmed;
+
+/// Escape.
+pub struct Cancelled;
 
 pub struct TextInput {
     focus_handle: FocusHandle,
@@ -50,6 +58,8 @@ pub struct TextInput {
 
 impl gpui::EventEmitter<Changed> for TextInput {}
 impl gpui::EventEmitter<BackspaceAtStart> for TextInput {}
+impl gpui::EventEmitter<Confirmed> for TextInput {}
+impl gpui::EventEmitter<Cancelled> for TextInput {}
 
 impl TextInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> TextInput {
@@ -77,6 +87,22 @@ impl TextInput {
         self.marked_range = None;
         cx.emit(Changed);
         cx.notify();
+    }
+
+    /// Select bytes `range` of the text (e.g. a name without its extension).
+    pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let end = self.content.len();
+        self.selected_range = range.start.min(end)..range.end.min(end);
+        self.selection_reversed = false;
+        cx.notify();
+    }
+
+    fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(Confirmed);
+    }
+
+    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(Cancelled);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -628,6 +654,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
