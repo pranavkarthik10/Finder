@@ -2,3 +2,4 @@
 *.pdb
 /crates/finder/assets/__pycache__
 /crates/finder/assets/icons/sf/
+/docs/*-local.mp4
