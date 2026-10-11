@@ -1,3 +1,4 @@
 /target
 *.pdb
 /crates/finder/assets/__pycache__
+/crates/finder/assets/icons/sf/

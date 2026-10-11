@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assets;
 mod browser;
 mod files;
 mod icons;
@@ -9,28 +10,12 @@ mod theme;
 
 use browser::{Browser, Collapse, Expand, GoBack, GoForward, GoUp, Open, SelectNext, SelectPrev};
 use gpui::{
-    App, AssetSource, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
+    App, Bounds, Focusable, KeyBinding, SharedString, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px,
     size,
 };
-use std::borrow::Cow;
-
-#[derive(rust_embed::RustEmbed)]
-#[folder = "assets/icons"]
-#[prefix = "icons/"]
-struct Assets;
-
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        Ok(<Self as rust_embed::Embed>::get(path).map(|f| f.data))
-    }
-
-    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(<Self as rust_embed::Embed>::iter().filter(|p| p.starts_with(path)).map(|p| p.to_string().into()).collect())
-    }
-}
 
 fn main() {
-    gpui_platform::application().with_assets(Assets).run(|cx: &mut App| {
+    gpui_platform::application().with_assets(assets::Assets).run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("down", SelectNext, Some("Browser")),
             KeyBinding::new("up", SelectPrev, Some("Browser")),
@@ -47,6 +32,7 @@ fn main() {
             KeyBinding::new("alt-right", GoForward, Some("Browser")),
             KeyBinding::new("backspace", GoBack, Some("Browser")),
         ]);
+        load_local_fonts(cx);
         let font: SharedString = theme::ui_font(&cx.text_system().all_font_names()).into();
         let bounds = Bounds::centered(None, size(px(theme::WINDOW_W), px(theme::WINDOW_H)), cx);
         let window = cx
@@ -68,4 +54,20 @@ fn main() {
         let _ = window;
         cx.activate(true);
     });
+}
+
+/// Fonts in `%LOCALAPPDATA%\Finder\fonts` (SF Pro for local testing: it
+/// may not be bundled), loaded for this process only.
+fn load_local_fonts(cx: &mut App) {
+    let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Finder").join("fonts")) else { return };
+    let fonts: Vec<std::borrow::Cow<'static, [u8]>> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("otf") || x.eq_ignore_ascii_case("ttf")))
+        .filter_map(|e| std::fs::read(e.path()).ok().map(Into::into))
+        .collect();
+    if !fonts.is_empty() {
+        let _ = cx.text_system().add_fonts(fonts);
+    }
 }

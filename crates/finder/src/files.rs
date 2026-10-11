@@ -254,24 +254,24 @@ pub fn format_bytes(b: u64) -> String {
     format!("{v:.1} {}", units[u])
 }
 
-/// "Today, 5:15 PM", "Yesterday, 9:02 AM", "9/20/26, 8:17 PM".
+/// "Today at 5:15 PM", "Yesterday at 9:02 AM", "Sep 20, 2026 at 8:17 PM".
 pub fn format_date(t: Option<SystemTime>) -> String {
     let Some(t) = t else { return "--".into() };
     let d: DateTime<Local> = t.into();
     let today = Local::now().date_naive();
     let time = d.format("%-I:%M %p");
     if d.date_naive() == today {
-        format!("Today, {time}")
+        format!("Today at {time}")
     } else if Some(d.date_naive()) == today.pred_opt() {
-        format!("Yesterday, {time}")
+        format!("Yesterday at {time}")
     } else {
-        format!("{}, {time}", d.format("%-m/%-d/%y"))
+        format!("{} at {time}", d.format("%b %-d, %Y"))
     }
 }
 
-/// "Sep 20, 2026 at 8:17 PM": the inspector's long form.
+/// "Saturday, September 6, 2025 at 2:49 PM": the inspector's long form.
 pub fn format_date_long(t: Option<SystemTime>) -> String {
     let Some(t) = t else { return "--".into() };
     let d: DateTime<Local> = t.into();
-    d.format("%b %-d, %Y at %-I:%M %p").to_string()
+    d.format("%A, %B %-d, %Y at %-I:%M %p").to_string()
 }
