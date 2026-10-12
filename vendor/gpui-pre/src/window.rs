@@ -4538,7 +4538,8 @@ impl Window {
         }
     }
 
-    /// Paint a glass surface over everything already painted beneath it.
+    /// Paint a glass surface over everything already painted beneath it,
+    /// with the soft shadow it casts.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_glass(
@@ -4549,10 +4550,13 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
+        // How far the glass shader draws the shadow past the outline.
+        const SHADOW_REACH: f32 = 24.;
         let scale_factor = self.scale_factor();
         let shape = self.snap_bounds(bounds);
         let reach = ScaledPixels(
             (style.refraction.abs() * (1. + style.dispersion.abs()) + 3. * style.blur + 2.)
+                .max(SHADOW_REACH)
                 * scale_factor,
         );
         let tint = style.tint;
@@ -4571,7 +4575,7 @@ impl Window {
             blur: style.blur,
             dispersion: style.dispersion,
             highlight: style.highlight * self.element_opacity(),
-            pad: 0,
+            shadow: style.shadow * self.element_opacity(),
         });
     }
 

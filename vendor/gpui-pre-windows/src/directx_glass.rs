@@ -33,6 +33,7 @@ struct GlassParams {
     misc: [f32; 4],
     blur: [f32; 4],
     tex: [f32; 4],
+    shadow: [f32; 4],
 }
 
 struct Target {
@@ -214,18 +215,25 @@ impl GlassRenderer {
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         }
 
-        for g in glass {
-            let scale = g.scale_factor;
-            // Copy everything the rim can reach, clamped to the frame.
-            let left = (g.bounds.origin.x.0.floor().max(0.0) as u32).min(width);
-            let top = (g.bounds.origin.y.0.floor().max(0.0) as u32).min(height);
-            let right = ((g.bounds.origin.x.0 + g.bounds.size.width.0).ceil().max(0.0) as u32)
-                .min(width);
-            let bottom = ((g.bounds.origin.y.0 + g.bounds.size.height.0).ceil().max(0.0) as u32)
-                .min(height);
-            if right <= left || bottom <= top {
-                continue;
+        // Shadows first, so no surface's shadow falls across another surface.
+        for g in glass.iter().filter(|g| g.shadow > 0.0) {
+            let Some(region) = copy_region(g, width, height) else { continue };
+            let mut p = params_for(g, region, viewport);
+            p.blur[0] = 1.0;
+            update_buffer(context, params, &[p])?;
+            unsafe {
+                context.OMSetRenderTargets(Some(slice::from_ref(frame_view)), None);
+                context.RSSetViewports(Some(slice::from_ref(viewport)));
+                context.VSSetShader(&self.glass_vertex, None);
+                context.PSSetShader(&self.glass_fragment, None);
+                context.OMSetBlendState(&self.blend, None, 0xFFFFFFFF);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                context.Draw(4, 0);
             }
+        }
+
+        for g in glass {
+            let Some([left, top, right, bottom]) = copy_region(g, width, height) else { continue };
             let region = [left as f32, top as f32, (right - left) as f32, (bottom - top) as f32];
             unsafe {
                 context.CopySubresourceRegion(
@@ -240,28 +248,10 @@ impl GlassRenderer {
                 );
             }
 
+            let scale = g.scale_factor;
             let frosted = g.blur > 0.0;
-            let tint = Rgba::from(g.tint);
-            let mut p = GlassParams {
-                shape: [
-                    g.shape.origin.x.0,
-                    g.shape.origin.y.0,
-                    g.shape.size.width.0,
-                    g.shape.size.height.0,
-                ],
-                clip: [
-                    g.content_mask.bounds.origin.x.0,
-                    g.content_mask.bounds.origin.y.0,
-                    g.content_mask.bounds.size.width.0,
-                    g.content_mask.bounds.size.height.0,
-                ],
-                region,
-                tint: [tint.r, tint.g, tint.b, tint.a],
-                optics: [g.corner_radius.0, g.refraction * scale, g.bezel * scale, g.dispersion],
-                misc: [scale, g.highlight, g.dark as f32, frosted as u32 as f32],
-                blur: [0.0; 4],
-                tex: [width as f32, height as f32, viewport.Width, viewport.Height],
-            };
+            let mut p = params_for(g, [left, top, right, bottom], viewport);
+            p.shadow = [0.0; 4];
 
             let source = if frosted {
                 let half = |x: u32| x.div_ceil(2).max(1);
@@ -299,6 +289,7 @@ impl GlassRenderer {
                     }
                 }
                 p.tex = [hw as f32, hh as f32, viewport.Width, viewport.Height];
+                p.blur = [0.0; 4];
                 &targets.frosted
             } else {
                 &targets.backdrop
@@ -319,5 +310,44 @@ impl GlassRenderer {
             }
         }
         Ok(())
+    }
+}
+
+/// The frame pixels a surface reads: everything its rim and shadow reach,
+/// clamped to the frame, as left, top, right, bottom.
+fn copy_region(g: &Glass, width: u32, height: u32) -> Option<[u32; 4]> {
+    let left = (g.bounds.origin.x.0.floor().max(0.0) as u32).min(width);
+    let top = (g.bounds.origin.y.0.floor().max(0.0) as u32).min(height);
+    let right = ((g.bounds.origin.x.0 + g.bounds.size.width.0).ceil().max(0.0) as u32).min(width);
+    let bottom = ((g.bounds.origin.y.0 + g.bounds.size.height.0).ceil().max(0.0) as u32).min(height);
+    (right > left && bottom > top).then_some([left, top, right, bottom])
+}
+
+fn params_for(g: &Glass, [left, top, right, bottom]: [u32; 4], viewport: &D3D11_VIEWPORT) -> GlassParams {
+    let scale = g.scale_factor;
+    let tint = Rgba::from(g.tint);
+    GlassParams {
+        shape: [g.shape.origin.x.0, g.shape.origin.y.0, g.shape.size.width.0, g.shape.size.height.0],
+        clip: [
+            g.content_mask.bounds.origin.x.0,
+            g.content_mask.bounds.origin.y.0,
+            g.content_mask.bounds.size.width.0,
+            g.content_mask.bounds.size.height.0,
+        ],
+        region: [left as f32, top as f32, (right - left) as f32, (bottom - top) as f32],
+        tint: [tint.r, tint.g, tint.b, tint.a],
+        optics: [g.corner_radius.0, g.refraction * scale, g.bezel * scale, g.dispersion],
+        misc: [scale, g.highlight, g.dark as f32, (g.blur > 0.0) as u32 as f32],
+        // The composite reads blur.x as "shadow only".
+        blur: [0.0; 4],
+        tex: [viewport.Width, viewport.Height, viewport.Width, viewport.Height],
+        // A soft drop shadow (sigma 6, 2px down) and a hairline ring, like
+        // Finder's flat capsules; stronger in the dark.
+        shadow: [
+            g.shadow * if g.dark != 0 { 5.0 } else { 1.0 },
+            6.0 * scale,
+            2.0 * scale,
+            g.shadow * if g.dark != 0 { 1.5 } else { 0.57 },
+        ],
     }
 }

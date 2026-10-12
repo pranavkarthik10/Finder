@@ -8,3 +8,5 @@ publish = false
 [dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.8" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8" }
+rust-embed = "8"
+anyhow = "1"

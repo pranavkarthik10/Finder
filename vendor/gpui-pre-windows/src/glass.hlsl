@@ -14,9 +14,11 @@ cbuffer GlassParams: register(b2) {
     float4 g_tint;     // straight sRGB rgba; a is strength
     float4 g_optics;   // corner radius, refraction, bezel (device px), dispersion
     float4 g_misc;     // scale factor, highlight, dark, frosted
-    float4 g_blur;     // sigma (source px), step.xy (source px), dest-to-source scale
+    float4 g_blur;     // frosting: sigma (source px), step.xy (source px), dest-to-source scale;
+                       // composite: x > 0.5 draws only the shadow
     float4 g_tex;      // source texture size.xy; viewport size.xy, or while
                        // frosting, the copied region's size in source px
+    float4 g_shadow;   // soft opacity, soft sigma, soft y offset (device px), ring opacity
 };
 
 Texture2D<float4> t_source: register(t0);
@@ -63,29 +65,40 @@ struct GlassVertexOutput {
 
 GlassVertexOutput glass_vertex(uint vertex_id: SV_VertexID) {
     float2 unit = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
-    // Two device pixels past the outline for its antialiased edge.
-    float2 origin = g_shape.xy - 2.0;
-    float2 size = g_shape.zw + 4.0;
+    // Past the outline far enough for its antialiased edge and its shadow.
+    float margin = g_shadow.x > 0.0 ? 3.0 * g_shadow.y + g_shadow.z : 2.0;
+    float2 origin = g_shape.xy - margin;
+    float2 size = g_shape.zw + 2.0 * margin;
     float2 p = origin + unit * size;
     GlassVertexOutput output;
     output.position = float4(p / g_tex.zw * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
     return output;
 }
 
-// Signed distance to the rounded rectangle (negative inside) and the outward
-// normal of the nearest point on its outline.
+// Signed distance to the outline (negative inside) and the outward normal of
+// its nearest point. Corners are continuous, like Apple's: a superellipse
+// that starts curving earlier than the circular radius but cuts less off the
+// diagonal. Capsules have no room for that and keep circular caps.
 float3 shape_field(float2 p, float2 half_size, float radius) {
-    float2 q = abs(p) - (half_size - radius);
+    float inner = min(half_size.x, half_size.y);
+    float reach = min(radius * 1.35, inner);
+    float exponent = 2.0 + 2.0 * sat((reach - radius) / max(radius * 0.35, 0.001));
+    float2 q = abs(p) - (half_size - reach);
     float d;
     float2 n;
     if (q.x > 0.0 && q.y > 0.0) {
-        d = length(q) - radius;
-        n = normalize(q);
+        float2 qn = pow(q / reach, exponent);
+        float norm = pow(qn.x + qn.y, 1.0 / exponent);
+        // Gradient of the p-norm; its length is below 1 off the axes, so
+        // dividing by it turns the level set into a distance.
+        float2 grad = pow(q / reach, exponent - 1.0) / pow(max(norm, 0.0001), exponent - 1.0);
+        d = (norm - 1.0) * reach / max(length(grad), 0.0001);
+        n = normalize(grad);
     } else if (q.x > q.y) {
-        d = q.x - radius;
+        d = q.x - reach;
         n = float2(1.0, 0.0);
     } else {
-        d = q.y - radius;
+        d = q.y - reach;
         n = float2(0.0, 1.0);
     }
     float2 s = float2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
@@ -140,6 +153,18 @@ float4 glass_fragment(GlassVertexOutput input): SV_Target {
     float2 n = field.yz;
     float aa = 1.0 / scale;
     float coverage = sat(0.5 - d / aa);
+
+    // The shadow, under and around the outline.
+    float2 lowered = px - float2(0.0, g_shadow.z) - (g_shape.xy + half_size);
+    float sd = max(shape_field(lowered, half_size, radius).x, 0.0);
+    float soft = g_shadow.x * exp(-sd * sd / (2.0 * g_shadow.y * g_shadow.y));
+    float ring = g_shadow.w * sat(1.0 - max(field.x, 0.0) / scale);
+    float shadow = sat(soft + ring) * (1.0 - coverage);
+    // Shadows are drawn for every surface in a batch before any glass.
+    if (g_blur.x > 0.5) {
+        if (shadow <= 0.0) discard;
+        return float4(0.0, 0.0, 0.0, shadow);
+    }
     if (coverage <= 0.0) discard;
 
     // Circular bezel: full displacement at the outline, none past the bezel.

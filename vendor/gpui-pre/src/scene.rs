@@ -811,6 +811,8 @@ pub struct GlassStyle {
     pub highlight: f32,
     /// Pigment, transmitted by luminance; its alpha is the strength.
     pub tint: Hsla,
+    /// Opacity of the soft shadow the surface casts; zero for none.
+    pub shadow: f32,
     /// Tone the glass for a dark appearance.
     pub dark: bool,
 }
@@ -824,6 +826,7 @@ impl Default for GlassStyle {
             dispersion: 0.,
             highlight: 1.,
             tint: Hsla::transparent_black(),
+            shadow: 0.07,
             dark: false,
         }
     }
@@ -849,7 +852,7 @@ pub struct Glass {
     pub blur: f32,
     pub dispersion: f32,
     pub highlight: f32,
-    pub pad: u32,
+    pub shadow: f32,
 }
 
 impl From<Glass> for Primitive {

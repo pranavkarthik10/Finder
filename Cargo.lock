@@ -1898,8 +1898,10 @@ dependencies = [
 name = "glass_probe"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui-pre",
  "gpui-pre-platform",
+ "rust-embed",
 ]
 
 [[package]]
