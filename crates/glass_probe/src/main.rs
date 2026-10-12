@@ -26,6 +26,8 @@ const TOOLBAR_H: f32 = 52.;
 const CAPSULE_H: f32 = 36.;
 const SIDEBAR_W: f32 = 206.;
 const HERO_H: f32 = 300.;
+/// How far the scroll edge reaches below the toolbar.
+const EDGE_FADE: f32 = 20.;
 const THUMB_W: f32 = 196.;
 const THUMB_H: f32 = 124.;
 
@@ -337,6 +339,19 @@ impl Probe {
             .px(px(12.))
             .gap(px(10.))
             .window_control_area(WindowControlArea::Drag)
+            // Content scrolling under the toolbar softens into the window's
+            // color, so the title and capsules stay legible over it.
+            .child({
+                let color: Hsla = theme.bg().into();
+                canvas(|_, _, _| (), move |bounds, _, window, _| {
+                    window.paint_scroll_edge(bounds, color.opacity(0.7), 12.)
+                })
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(TOOLBAR_H + EDGE_FADE))
+            })
             .child(
                 capsule(s)
                     .child(tool_button("chevron.left@medium", false, theme))

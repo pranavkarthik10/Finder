@@ -4576,6 +4576,38 @@ impl Window {
             dispersion: style.dispersion,
             highlight: style.highlight * self.element_opacity(),
             shadow: style.shadow * self.element_opacity(),
+            edge: 0,
+        });
+    }
+
+    /// Paint a scroll edge: under a toolbar, content scrolling beneath it is
+    /// blurred by up to `blur` (a Gaussian sigma) and faded toward `color`,
+    /// fully at the top of `bounds` and not at all at its bottom, so what sits
+    /// over it stays legible.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_scroll_edge(&mut self, bounds: Bounds<Pixels>, color: Hsla, blur: f32) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let shape = self.snap_bounds(bounds);
+        let opacity = self.element_opacity();
+        self.next_frame.scene.insert_primitive(crate::Glass {
+            order: 0,
+            dark: 0,
+            bounds: shape.dilate(ScaledPixels((3. * blur + 2.) * scale_factor)),
+            shape,
+            content_mask: self.snapped_content_mask(),
+            tint: color.opacity(opacity),
+            corner_radius: ScaledPixels(0.),
+            scale_factor,
+            refraction: 0.,
+            bezel: 0.,
+            blur,
+            dispersion: 0.,
+            highlight: 0.,
+            shadow: 0.,
+            edge: 1,
         });
     }
 

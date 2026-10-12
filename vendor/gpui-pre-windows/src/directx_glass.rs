@@ -34,6 +34,7 @@ struct GlassParams {
     blur: [f32; 4],
     tex: [f32; 4],
     shadow: [f32; 4],
+    mode: [f32; 4],
 }
 
 struct Target {
@@ -206,7 +207,6 @@ impl GlassRenderer {
         self.targets(device, width, height)?;
         let targets = self.targets.as_ref().unwrap();
         let params = self.params.as_ref().context("glass params")?;
-        let none_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
 
         unsafe {
             context.VSSetConstantBuffers(2, Some(slice::from_ref(&self.params)));
@@ -215,8 +215,13 @@ impl GlassRenderer {
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         }
 
-        // Shadows first, so no surface's shadow falls across another surface.
-        for g in glass.iter().filter(|g| g.shadow > 0.0) {
+        // Scroll edges lie under everything else in a batch; then shadows, so
+        // no surface's shadow falls across another surface; then the glass.
+        let (edges, surfaces): (Vec<&Glass>, Vec<&Glass>) = glass.iter().partition(|g| g.edge != 0);
+        for g in edges {
+            self.draw_body(context, targets, params, frame, frame_view, viewport, g)?;
+        }
+        for g in surfaces.iter().filter(|g| g.shadow > 0.0) {
             let Some(region) = copy_region(g, width, height) else { continue };
             let mut p = params_for(g, region, viewport);
             p.blur[0] = 1.0;
@@ -232,82 +237,102 @@ impl GlassRenderer {
             }
         }
 
-        for g in glass {
-            let Some([left, top, right, bottom]) = copy_region(g, width, height) else { continue };
-            let region = [left as f32, top as f32, (right - left) as f32, (bottom - top) as f32];
-            unsafe {
-                context.CopySubresourceRegion(
-                    &targets.backdrop.texture,
-                    0,
-                    0,
-                    0,
-                    0,
-                    frame,
-                    0,
-                    Some(&D3D11_BOX { left, top, front: 0, right, bottom, back: 1 }),
-                );
-            }
+        for g in surfaces {
+            self.draw_body(context, targets, params, frame, frame_view, viewport, g)?;
+        }
+        Ok(())
+    }
 
-            let scale = g.scale_factor;
-            let frosted = g.blur > 0.0;
-            let mut p = params_for(g, [left, top, right, bottom], viewport);
-            p.shadow = [0.0; 4];
+    /// Copy the backdrop under one surface, frost it if asked, and composite
+    /// the surface over it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_body(
+        &self,
+        context: &ID3D11DeviceContext,
+        targets: &Targets,
+        params: &ID3D11Buffer,
+        frame: &ID3D11Texture2D,
+        frame_view: &Option<ID3D11RenderTargetView>,
+        viewport: &D3D11_VIEWPORT,
+        g: &Glass,
+    ) -> Result<()> {
+        let (width, height) = (viewport.Width as u32, viewport.Height as u32);
+        let none_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
+        let Some([left, top, right, bottom]) = copy_region(g, width, height) else { return Ok(()) };
+        let region = [left as f32, top as f32, (right - left) as f32, (bottom - top) as f32];
+        unsafe {
+            context.CopySubresourceRegion(
+                &targets.backdrop.texture,
+                0,
+                0,
+                0,
+                0,
+                frame,
+                0,
+                Some(&D3D11_BOX { left, top, front: 0, right, bottom, back: 1 }),
+            );
+        }
 
-            let source = if frosted {
-                let half = |x: u32| x.div_ceil(2).max(1);
-                let (hw, hh) = (half(width), half(height));
-                let half_viewport = D3D11_VIEWPORT {
-                    TopLeftX: 0.0,
-                    TopLeftY: 0.0,
-                    Width: (right - left).div_ceil(2) as f32 + 1.0,
-                    Height: (bottom - top).div_ceil(2) as f32 + 1.0,
-                    MinDepth: 0.0,
-                    MaxDepth: 1.0,
-                };
-                let sigma = g.blur * scale;
-                let (rw, rh) = (region[2], region[3]);
-                let passes = [
-                    // Horizontal, downsampling the full-resolution backdrop.
-                    (&targets.backdrop, &targets.horizontal, [sigma, 2.0, 0.0, 2.0], [width as f32, height as f32, rw, rh]),
-                    // Vertical, at half resolution.
-                    (&targets.horizontal, &targets.frosted, [sigma * 0.5, 0.0, 1.0, 1.0], [hw as f32, hh as f32, (rw * 0.5).ceil(), (rh * 0.5).ceil()]),
-                ];
-                for (from, to, blur, tex) in passes {
-                    p.blur = blur;
-                    p.tex = tex;
-                    update_buffer(context, params, &[p])?;
-                    unsafe {
-                        context.PSSetShaderResources(0, Some(&none_srv));
-                        context.OMSetRenderTargets(Some(slice::from_ref(&to.rtv)), None);
-                        context.RSSetViewports(Some(slice::from_ref(&half_viewport)));
-                        context.VSSetShader(&self.blur_vertex, None);
-                        context.PSSetShader(&self.blur_fragment, None);
-                        context.OMSetBlendState(&self.opaque, None, 0xFFFFFFFF);
-                        context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                        context.PSSetShaderResources(0, Some(slice::from_ref(&from.srv)));
-                        context.Draw(3, 0);
-                    }
-                }
-                p.tex = [hw as f32, hh as f32, viewport.Width, viewport.Height];
-                p.blur = [0.0; 4];
-                &targets.frosted
-            } else {
-                &targets.backdrop
+        let scale = g.scale_factor;
+        let frosted = g.blur > 0.0;
+        let mut p = params_for(g, [left, top, right, bottom], viewport);
+        p.shadow = [0.0; 4];
+
+        let source = if frosted {
+            let half = |x: u32| x.div_ceil(2).max(1);
+            let (hw, hh) = (half(width), half(height));
+            let half_viewport = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: (right - left).div_ceil(2) as f32 + 1.0,
+                Height: (bottom - top).div_ceil(2) as f32 + 1.0,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
             };
-
-            update_buffer(context, params, &[p])?;
-            unsafe {
-                context.PSSetShaderResources(0, Some(&none_srv));
-                context.OMSetRenderTargets(Some(slice::from_ref(frame_view)), None);
-                context.RSSetViewports(Some(slice::from_ref(viewport)));
-                context.VSSetShader(&self.glass_vertex, None);
-                context.PSSetShader(&self.glass_fragment, None);
-                context.OMSetBlendState(&self.blend, None, 0xFFFFFFFF);
-                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-                context.PSSetShaderResources(0, Some(slice::from_ref(&source.srv)));
-                context.Draw(4, 0);
-                context.PSSetShaderResources(0, Some(&none_srv));
+            let sigma = g.blur * scale;
+            let (rw, rh) = (region[2], region[3]);
+            let passes = [
+                // Horizontal, downsampling the full-resolution backdrop.
+                (&targets.backdrop, &targets.horizontal, [sigma, 2.0, 0.0, 2.0], [width as f32, height as f32, rw, rh]),
+                // Vertical, at half resolution.
+                (&targets.horizontal, &targets.frosted, [sigma * 0.5, 0.0, 1.0, 1.0], [hw as f32, hh as f32, (rw * 0.5).ceil(), (rh * 0.5).ceil()]),
+            ];
+            for (from, to, blur, tex) in passes {
+                p.blur = blur;
+                p.tex = tex;
+                update_buffer(context, params, &[p])?;
+                unsafe {
+                    context.PSSetShaderResources(0, Some(&none_srv));
+                    context.OMSetRenderTargets(Some(slice::from_ref(&to.rtv)), None);
+                    context.RSSetViewports(Some(slice::from_ref(&half_viewport)));
+                    context.VSSetShader(&self.blur_vertex, None);
+                    context.PSSetShader(&self.blur_fragment, None);
+                    context.OMSetBlendState(&self.opaque, None, 0xFFFFFFFF);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    context.PSSetShaderResources(0, Some(slice::from_ref(&from.srv)));
+                    context.Draw(3, 0);
+                }
             }
+            p.tex = [hw as f32, hh as f32, viewport.Width, viewport.Height];
+            p.blur = [0.0; 4];
+            &targets.frosted
+        } else {
+            &targets.backdrop
+        };
+
+        update_buffer(context, params, &[p])?;
+        unsafe {
+            context.PSSetShaderResources(0, Some(&none_srv));
+            context.OMSetRenderTargets(Some(slice::from_ref(frame_view)), None);
+            context.RSSetViewports(Some(slice::from_ref(viewport)));
+            context.VSSetShader(&self.glass_vertex, None);
+            context.PSSetShader(&self.glass_fragment, None);
+            context.OMSetBlendState(&self.blend, None, 0xFFFFFFFF);
+            context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            // The frosted copy, and the sharp one a scroll edge blends it with.
+            context.PSSetShaderResources(0, Some(&[source.srv.clone(), targets.backdrop.srv.clone()]));
+            context.Draw(4, 0);
+            context.PSSetShaderResources(0, Some(&[None, None]));
         }
         Ok(())
     }
@@ -349,5 +374,6 @@ fn params_for(g: &Glass, [left, top, right, bottom]: [u32; 4], viewport: &D3D11_
             2.0 * scale,
             g.shadow * if g.dark != 0 { 1.5 } else { 0.57 },
         ],
+        mode: [g.edge as f32, 0.0, 0.0, 0.0],
     }
 }
