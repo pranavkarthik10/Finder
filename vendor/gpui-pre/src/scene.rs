@@ -834,7 +834,7 @@ impl Default for GlassStyle {
 
 /// A glass surface: the backdrop under `shape` and around its rim, refracted.
 /// Or, with `edge` set, a scroll edge: the backdrop under `shape` blurred and
-/// faded toward `tint`, fully at its top and not at all at its bottom.
+/// veiled by `tint`.
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 #[expect(missing_docs)]

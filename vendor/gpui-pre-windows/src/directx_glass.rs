@@ -329,10 +329,9 @@ impl GlassRenderer {
             context.PSSetShader(&self.glass_fragment, None);
             context.OMSetBlendState(&self.blend, None, 0xFFFFFFFF);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-            // The frosted copy, and the sharp one a scroll edge blends it with.
-            context.PSSetShaderResources(0, Some(&[source.srv.clone(), targets.backdrop.srv.clone()]));
+            context.PSSetShaderResources(0, Some(slice::from_ref(&source.srv)));
             context.Draw(4, 0);
-            context.PSSetShaderResources(0, Some(&[None, None]));
+            context.PSSetShaderResources(0, Some(&[None]));
         }
         Ok(())
     }
@@ -366,13 +365,13 @@ fn params_for(g: &Glass, [left, top, right, bottom]: [u32; 4], viewport: &D3D11_
         // The composite reads blur.x as "shadow only".
         blur: [0.0; 4],
         tex: [viewport.Width, viewport.Height, viewport.Width, viewport.Height],
-        // A soft drop shadow (sigma 6, 2px down) and a hairline ring, like
-        // Finder's flat capsules; stronger in the dark.
+        // A crisp hairline ring and only a faint drop shadow (sigma 6, 2px
+        // down), as macOS draws its toolbar capsules; stronger in the dark.
         shadow: [
-            g.shadow * if g.dark != 0 { 5.0 } else { 1.0 },
+            g.shadow * if g.dark != 0 { 4.0 } else { 0.45 },
             6.0 * scale,
             2.0 * scale,
-            g.shadow * if g.dark != 0 { 1.5 } else { 0.57 },
+            g.shadow * if g.dark != 0 { 2.0 } else { 1.4 },
         ],
         mode: [g.edge as f32, 0.0, 0.0, 0.0],
     }

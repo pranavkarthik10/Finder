@@ -23,8 +23,6 @@ cbuffer GlassParams: register(b2) {
 };
 
 Texture2D<float4> t_source: register(t0);
-// The unfrosted backdrop, at full resolution, for scroll edges.
-Texture2D<float4> t_sharp: register(t1);
 SamplerState s_clamp: register(s0);
 
 float sat(float x) { return clamp(x, 0.0, 1.0); }
@@ -44,17 +42,6 @@ float4 blur_fragment(float4 position: SV_Position): SV_Target {
     float2 center = position.xy * g_blur.w;
     float2 step_px = g_blur.yz;
     float sigma = max(g_blur.x, 0.001);
-    if (g_mode.x > 0.5) {
-        // A scroll edge blurs progressively: fully at its top, not at all at
-        // its bottom. The second pass reads half-resolution texels.
-        float device_y = g_region.y + center.y * (g_blur.w > 1.5 ? 1.0 : 2.0);
-        float t = 1.0 - sat((device_y - g_shape.y) / g_shape.w);
-        sigma = g_blur.x * smoothstep(0.0, 1.0, t);
-        if (sigma < 0.35) {
-            float2 at = clamp(center, 0.5, g_tex.zw - 0.5);
-            return t_source.SampleLevel(s_clamp, at / g_tex.xy, 0);
-        }
-    }
     float step_len = length(step_px);
     int taps = min((int)ceil(3.0 * sigma / step_len), 64);
     float4 sum = 0.0;
@@ -142,7 +129,10 @@ float3 tone(float3 v) {
         float weight = dark ? 0.90 : 0.80;
         float3 toned = curve.x + curve.y * v + curve.z * v * v;
         float3 c = weight * toned + (1.0 - weight) * v;
-        return saturate(saturate_color(c, dark ? 1.0648 : 1.1031));
+        c = saturate(saturate_color(c, dark ? 1.0648 : 1.1031));
+        // macOS toolbar glass is milkier than iOS: near white over white
+        // content in the light, a deep gray in the dark.
+        return lerp(c, dark ? float3(0.16, 0.16, 0.17) : float3(1.0, 1.0, 1.0), 0.45);
     }
     // Clear: lift the shadows, keep a faint broad veil.
     float lift = dark ? 0.15 : 0.18;
@@ -159,17 +149,11 @@ float4 glass_fragment(GlassVertexOutput input): SV_Target {
         discard;
 
     if (g_mode.x > 0.5) {
-        // Scroll edge: sharp content at the bottom of the strip, blurred and
-        // faded toward the window's color at its top.
+        // Scroll edge: a flat, milky veil over blurred content, as macOS
+        // lays under a toolbar once content scrolls beneath it.
         if (px.x < g_shape.x || px.x > g_shape.x + g_shape.z || px.y < g_shape.y || px.y > g_shape.y + g_shape.w)
             discard;
-        float t = 1.0 - sat((px.y - g_shape.y) / g_shape.w);
-        float2 local = clamp(px - g_region.xy, 0.5, g_region.zw - 0.5);
-        float3 sharp = t_sharp.SampleLevel(s_clamp, local / g_tex.zw, 0).rgb;
-        // The frost is already progressive; the sharp copy only restores
-        // full resolution where the blur has run out.
-        float3 c = lerp(sharp, sample_backdrop(px), smoothstep(0.0, 0.2, t));
-        c = lerp(c, g_tint.rgb, g_tint.a * smoothstep(0.0, 1.0, t));
+        float3 c = lerp(sample_backdrop(px), g_tint.rgb, g_tint.a);
         return float4(c, 1.0);
     }
 

@@ -4581,9 +4581,8 @@ impl Window {
     }
 
     /// Paint a scroll edge: under a toolbar, content scrolling beneath it is
-    /// blurred by up to `blur` (a Gaussian sigma) and faded toward `color`,
-    /// fully at the top of `bounds` and not at all at its bottom, so what sits
-    /// over it stays legible.
+    /// blurred by `blur` (a Gaussian sigma) and veiled by `color`, so what
+    /// sits over it stays legible.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_scroll_edge(&mut self, bounds: Bounds<Pixels>, color: Hsla, blur: f32) {
