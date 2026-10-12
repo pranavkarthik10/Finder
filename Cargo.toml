@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/fsearch", "crates/finder"]
+members = ["crates/fsearch", "crates/finder", "crates/glass_probe"]
+exclude = ["vendor"]
 
 [profile.release]
 opt-level = 3
@@ -20,3 +21,8 @@ opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Liquid Glass: GPUI core and its Windows renderer carry a glass primitive.
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
