@@ -1,25 +1,33 @@
-//! Liquid Glass probe: Finder's toolbar in glass over content that scrolls
-//! beneath it, plus a free lens, with keys to tune the optics live.
+//! Liquid Glass probe: a Finder window on the Windows wallpapers folder, in
+//! icon view, with the toolbar's glass capsules floating over photos that
+//! scroll beneath them.
 //!
-//! Drag the lens. Keys: R/F refraction, E/W bezel, B/V blur, D dispersion,
-//! H highlight, S shadow, T tint, M dark, C clear/regular, 0 reset.
+//! Keys: R/F refraction, E/W bezel, B/V blur, D dispersion, H highlight,
+//! S shadow, T tint, M dark, C clear/regular, 0 reset; L shows a draggable
+//! lens and I the current settings.
 //!
-//! GLASS="blur=0,refraction=40,x=300,y=200,scroll=120" sets the starting
-//! state, for screenshots without driving the keyboard.
+//! GLASS="scroll=200,blur=0,lens=1,info=1" sets the starting state, for
+//! screenshots without driving the keyboard.
 
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
 
 use gpui::{
     App, AssetSource, Bounds, Context, FocusHandle, FontWeight, GlassStyle, Hsla, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle,
-    SharedString, Window, WindowBounds, WindowOptions, canvas, div, hsla, img, point, prelude::*,
-    px, rgb, size, svg,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, Rgba,
+    ScrollHandle, SharedString, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowOptions, canvas, div, hsla, img, point, prelude::*, px, rgb, rgba, size, svg,
 };
 use rust_embed::Embed;
 
-const WALLPAPER: &str = "C:/Windows/Web/Wallpaper/Windows/img0.jpg";
 const TOOLBAR_H: f32 = 52.;
 const CAPSULE_H: f32 = 36.;
+const SIDEBAR_W: f32 = 206.;
+const HERO_H: f32 = 300.;
+const THUMB_W: f32 = 196.;
+const THUMB_H: f32 = 124.;
 
 /// Finder's icons: SF Symbols where extracted locally, else its stand-ins.
 #[derive(Embed)]
@@ -50,9 +58,19 @@ const STAND_INS: &[(&str, &str)] = &[
     ("tag", "tag"),
     ("ellipsis", "ellipsis"),
     ("magnifyingglass", "search"),
+    ("clock", "clock"),
+    ("document", "document"),
+    ("arrow.down.circle", "download"),
+    ("menubar.dock.rectangle", "desktop"),
+    ("internaldrive", "drive"),
+    ("icloud", "cloud"),
+    ("circle.fill", "circle"),
+    ("xmark", "tl-close"),
+    ("minus", "tl-min"),
+    ("plus", "tl-max"),
 ];
 
-fn sym(name: &str, pt: f32, color: Hsla) -> gpui::Svg {
+fn sym(name: &str, pt: f32, color: impl Into<Hsla>) -> gpui::Svg {
     let sf = format!("icons/sf/{name}.svg");
     let path = if Assets::get(&sf).is_some() {
         sf
@@ -61,17 +79,80 @@ fn sym(name: &str, pt: f32, color: Hsla) -> gpui::Svg {
         let file = STAND_INS.iter().find(|(n, _)| *n == base).map_or(base, |(_, f)| f);
         format!("icons/{file}.svg")
     };
-    svg().path(path).size(px(pt * 1.25)).flex_none().text_color(color)
+    svg().path(path).size(px(pt * 1.25)).flex_none().text_color(color.into())
+}
+
+/// Finder's palette, light or dark.
+struct Theme {
+    dark: bool,
+}
+
+impl Theme {
+    fn pick(&self, light: u32, dark: u32) -> Rgba {
+        rgba(if self.dark { dark } else { light })
+    }
+    fn bg(&self) -> Rgba { self.pick(0xFFFFFFFF, 0x1E1E1EFF) }
+    fn text(&self) -> Rgba { self.pick(0x000000DE, 0xFFFFFFE0) }
+    fn secondary(&self) -> Rgba { self.pick(0x00000080, 0xFFFFFF8C) }
+    fn separator(&self) -> Rgba { self.pick(0x00000017, 0xFFFFFF1A) }
+    fn sidebar(&self) -> Rgba { self.pick(0xF4F4F6FF, 0x262628FF) }
+    fn sidebar_header(&self) -> Rgba { self.pick(0x00000066, 0xFFFFFF66) }
+    fn sidebar_icon(&self) -> Rgba { self.pick(0x000000B3, 0xFFFFFFB3) }
+    fn selected(&self) -> Rgba { self.pick(0x0000000F, 0xFFFFFF1A) }
+    fn accent(&self) -> Rgba { self.pick(0x0A7AFFFF, 0x3D9BFFFF) }
+    fn glass_icon(&self) -> Hsla {
+        if self.dark { hsla(0., 0., 1., 0.85) } else { hsla(0., 0., 0.12, 1.) }
+    }
+    fn pressed(&self) -> Hsla {
+        if self.dark { hsla(0., 0., 1., 0.12) } else { hsla(0., 0., 0., 0.07) }
+    }
+}
+
+/// A copy of `src` at most `edge` pixels on a side, cached in the temp folder.
+fn cached(src: &Path, edge: u32) -> Option<PathBuf> {
+    let cache = std::env::temp_dir().join("glass_probe_thumbs");
+    let _ = std::fs::create_dir_all(&cache);
+    let out = cache.join(format!("{edge}-{}", src.file_name()?.to_string_lossy()));
+    if !out.exists() {
+        image::open(src).ok()?.thumbnail(edge, edge).to_rgb8().save(&out).ok()?;
+    }
+    Some(out)
+}
+
+/// The banner: color and detail all the way to its top edge.
+fn hero() -> Option<PathBuf> {
+    cached(Path::new("C:/Windows/Web/Wallpaper/ThemeB/img27.jpg"), 2400)
+}
+
+/// Small copies of the wallpapers Windows ships.
+fn photos() -> Vec<(SharedString, PathBuf)> {
+    let mut sources: Vec<PathBuf> = ["Wallpaper/Windows", "Wallpaper/ThemeA", "Wallpaper/ThemeB", "Wallpaper/ThemeC", "Wallpaper/ThemeD", "Screen"]
+        .iter()
+        .flat_map(|dir| std::fs::read_dir(Path::new("C:/Windows/Web").join(dir)).into_iter().flatten())
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("jpg")))
+        // Too small, and a flat color.
+        .filter(|p| !p.ends_with("img50.jpg") && !p.ends_with("img105.jpg"))
+        .collect();
+    sources.sort();
+    sources
+        .into_iter()
+        .filter_map(|src| Some((src.file_name()?.to_string_lossy().to_string().into(), cached(&src, 640)?)))
+        .collect()
 }
 
 struct Probe {
     focus: FocusHandle,
     style: GlassStyle,
-    lens: Point<Pixels>,
-    drag: Option<Point<Pixels>>,
+    photos: Vec<(SharedString, PathBuf)>,
+    hero: Option<PathBuf>,
     scroll: ScrollHandle,
-    /// A starting scroll offset, applied once the list has been laid out.
+    /// A starting scroll offset, applied once the content has been laid out.
     pending_scroll: Option<f32>,
+    lens: Option<Point<Pixels>>,
+    drag: Option<Point<Pixels>>,
+    info: bool,
 }
 
 /// A glass surface filling its (relative) parent.
@@ -96,12 +177,7 @@ fn capsule(style: GlassStyle) -> gpui::Div {
         .child(glass(CAPSULE_H / 2., style))
 }
 
-fn icon_color(style: &GlassStyle) -> Hsla {
-    if style.dark { hsla(0., 0., 1., 0.85) } else { hsla(0., 0., 0.12, 1.) }
-}
-
-fn tool_button(name: &str, on: bool, style: &GlassStyle) -> gpui::Div {
-    let pressed = if style.dark { hsla(0., 0., 1., 0.12) } else { hsla(0., 0., 0., 0.07) };
+fn tool_button(name: &str, on: bool, theme: &Theme) -> gpui::Div {
     div()
         .h(px(CAPSULE_H - 8.))
         .min_w(px(38.))
@@ -110,8 +186,8 @@ fn tool_button(name: &str, on: bool, style: &GlassStyle) -> gpui::Div {
         .items_center()
         .justify_center()
         .rounded_full()
-        .when(on, |d| d.bg(pressed))
-        .child(sym(name, 15., icon_color(style)))
+        .when(on, |d| d.bg(theme.pressed()))
+        .child(sym(name, 15., theme.glass_icon()))
 }
 
 impl Probe {
@@ -126,35 +202,146 @@ impl Probe {
             "v" => s.blur = (s.blur - 1.).max(0.),
             "d" => s.dispersion = if s.dispersion > 0. { 0. } else { 0.03 },
             "h" => s.highlight = if s.highlight > 0. { 0. } else { 1. },
-            "t" => s.tint = if s.tint.a > 0. { Hsla::transparent_black() } else { hsla(0.58, 0.9, 0.5, 0.6) },
             "s" => s.shadow = if s.shadow > 0. { 0. } else { GlassStyle::default().shadow },
+            "t" => s.tint = if s.tint.a > 0. { Hsla::transparent_black() } else { hsla(0.58, 0.9, 0.5, 0.6) },
             "m" => s.dark = !s.dark,
             "c" => s.blur = if s.blur > 0. { 0. } else { 7.33 },
             "0" => *s = GlassStyle::default(),
+            "l" => self.lens = if self.lens.is_some() { None } else { Some(point(px(420.), px(260.))) },
+            "i" => self.info = !self.info,
             _ => return,
         }
         cx.notify();
     }
 
-    fn toolbar(&self) -> impl IntoElement {
+    fn sidebar(&self, theme: &Theme, window: &Window) -> impl IntoElement {
+        let header = |title: &'static str| {
+            div()
+                .h(px(28.))
+                .mt(px(8.))
+                .px(px(10.))
+                .flex()
+                .items_end()
+                .pb(px(6.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.sidebar_header())
+                .child(title)
+        };
+        let row = |icon: &str, name: &'static str, on: bool| {
+            let tint = if on { theme.accent() } else { theme.sidebar_icon() };
+            div()
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .px(px(8.))
+                .rounded(px(10.))
+                .text_size(px(13.))
+                .text_color(if on { theme.accent() } else { theme.text() })
+                .when(on, |d| d.bg(theme.selected()))
+                .child(div().w(px(22.)).flex().justify_center().child(sym(icon, 15., tint)))
+                .child(name)
+        };
+        let tag = |hue: Option<f32>, name: &'static str| {
+            let color = hue.map_or(hsla(0., 0., 0.6, 1.), |h| hsla(h, 0.85, 0.55, 1.));
+            div()
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .px(px(8.))
+                .text_size(px(13.))
+                .text_color(theme.text())
+                .child(div().w(px(22.)).flex().justify_center().child(div().size(px(10.)).rounded_full().bg(color)))
+                .child(name)
+        };
+        let active = window.is_window_active();
+        let light = |color: u32, glyph: &'static str, area: WindowControlArea| {
+            div()
+                .size(px(14.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if active { rgb(color) } else { theme.pick(0xDDDDDDFF, 0x4A4A4CFF) })
+                .border(px(0.5))
+                .border_color(theme.pick(0x00000014, 0x00000040))
+                .window_control_area(area)
+                .child(
+                    svg()
+                        .path(format!("icons/{glyph}.svg"))
+                        .size(px(11.))
+                        .text_color(gpui::transparent_black())
+                        .group_hover("lights", |s| s.text_color(rgba(0x00000099))),
+                )
+        };
+        div()
+            .relative()
+            .w(px(SIDEBAR_W))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(theme.sidebar())
+            .border_r_1()
+            .border_color(theme.separator())
+            .child(div().h(px(TOOLBAR_H)).flex_none().window_control_area(WindowControlArea::Drag))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .px(px(8.))
+                    .child(header("Favorites").mt_0())
+                    .child(row("airdrop", "AirDrop", false))
+                    .child(row("clock", "Recents", false))
+                    .child(row("applications", "Applications", false))
+                    .child(row("menubar.dock.rectangle", "Desktop", false))
+                    .child(row("document", "Documents", false))
+                    .child(row("arrow.down.circle", "Downloads", false))
+                    .child(row("folder", "Wallpapers", true))
+                    .child(header("Locations"))
+                    .child(row("icloud", "iCloud Drive", false))
+                    .child(row("internaldrive", "Windows (C:)", false))
+                    .child(header("Tags"))
+                    .child(tag(Some(0.0), "Red"))
+                    .child(tag(Some(0.08), "Orange"))
+                    .child(tag(Some(0.33), "Green"))
+                    .child(tag(Some(0.6), "Blue"))
+                    .child(tag(None, "All Tags…")),
+            )
+            .child(
+                div()
+                    .group("lights")
+                    .absolute()
+                    .top(px((TOOLBAR_H - 14.) / 2.))
+                    .left(px(19.))
+                    .flex()
+                    .gap(px(8.))
+                    .child(light(0xFF5F57, "tl-close", WindowControlArea::Close))
+                    .child(light(0xFEBC2E, "tl-min", WindowControlArea::Min))
+                    .child(light(0x28C840, "tl-max", WindowControlArea::Max)),
+            )
+    }
+
+    fn toolbar(&self, theme: &Theme) -> impl IntoElement {
         let s = self.style;
-        let separator = if s.dark { hsla(0., 0., 1., 0.1) } else { hsla(0., 0., 0., 0.09) };
-        let secondary = if s.dark { hsla(0., 0., 1., 0.55) } else { hsla(0., 0., 0., 0.5) };
         div()
             .absolute()
             .top_0()
-            .left_0()
+            .left(px(SIDEBAR_W))
             .right_0()
             .h(px(TOOLBAR_H))
             .flex()
             .items_center()
             .px(px(12.))
             .gap(px(10.))
+            .window_control_area(WindowControlArea::Drag)
             .child(
                 capsule(s)
-                    .child(tool_button("chevron.left@medium", false, &s))
-                    .child(div().w(px(1.)).h(px(16.)).bg(separator))
-                    .child(tool_button("chevron.right@medium", false, &s).opacity(0.3)),
+                    .child(tool_button("chevron.left@medium", false, theme))
+                    .child(div().w(px(1.)).h(px(16.)).bg(theme.separator()))
+                    .child(tool_button("chevron.right@medium", false, theme).opacity(0.3)),
             )
             .child(
                 div()
@@ -162,37 +349,94 @@ impl Probe {
                     .px(px(4.))
                     .text_size(px(15.))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(if s.dark { hsla(0., 0., 1., 0.88) } else { hsla(0., 0., 0., 0.87) })
-                    .child("Documents"),
+                    .text_color(theme.text())
+                    .child("Wallpapers"),
             )
             .child(
                 capsule(s)
-                    .child(tool_button("square.grid.2x2", false, &s))
-                    .child(tool_button("list.bullet", true, &s))
-                    .child(tool_button("rectangle.split.3x1", false, &s))
-                    .child(tool_button("squares.below.rectangle", false, &s)),
+                    .child(tool_button("square.grid.2x2", true, theme))
+                    .child(tool_button("list.bullet", false, theme))
+                    .child(tool_button("rectangle.split.3x1", false, theme))
+                    .child(tool_button("squares.below.rectangle", false, theme)),
             )
             .child(
                 capsule(s).child(
-                    tool_button("square.grid.3x1.below.line.grid.1x2", false, &s)
+                    tool_button("square.grid.3x1.below.line.grid.1x2", false, theme)
                         .gap(px(1.))
-                        .child(sym("chevron.down@semibold", 8., icon_color(&s))),
+                        .child(sym("chevron.down@semibold", 8., theme.glass_icon())),
                 ),
             )
             .child(
                 capsule(s)
-                    .child(tool_button("square.and.arrow.up", false, &s))
-                    .child(tool_button("tag", false, &s))
-                    .child(tool_button("ellipsis", false, &s)),
+                    .child(tool_button("square.and.arrow.up", false, theme))
+                    .child(tool_button("tag", false, theme))
+                    .child(tool_button("ellipsis", false, theme)),
             )
             .child(
                 capsule(s)
-                    .w(px(220.))
+                    .w(px(200.))
                     .px(px(10.))
                     .gap(px(5.))
-                    .child(sym("magnifyingglass", 13., secondary))
-                    .child(div().text_size(px(13.)).text_color(secondary).child("Search")),
+                    .child(sym("magnifyingglass", 13., theme.secondary()))
+                    .child(div().text_size(px(13.)).text_color(theme.secondary()).child("Search")),
             )
+    }
+
+    fn content(&self, theme: &Theme) -> impl IntoElement {
+        let hero = self.hero.clone();
+        let tiles = self.photos.iter().enumerate().map(|(i, (name, path))| {
+            let on = i == 4;
+            div()
+                .w(px(THUMB_W + 16.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .p(px(4.))
+                        .rounded(px(10.))
+                        .when(on, |d| d.bg(theme.selected()))
+                        .child(img(path.clone()).w(px(THUMB_W)).h(px(THUMB_H)).rounded(px(6.)).object_fit(ObjectFit::Cover)),
+                )
+                .child(
+                    div()
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .text_size(px(12.))
+                        .when(on, |d| d.bg(theme.accent()).text_color(rgb(0xFFFFFF)))
+                        .when(!on, |d| d.text_color(theme.text()))
+                        .child(name.clone()),
+                )
+        });
+        div()
+            .id("content")
+            .absolute()
+            .top_0()
+            .left(px(SIDEBAR_W))
+            .right_0()
+            .bottom_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .pt(px(TOOLBAR_H))
+            .children(hero.map(|p| {
+                // An image sizes itself by its aspect ratio; pin it to the banner.
+                div().mx(px(16.)).mt(px(8.)).h(px(HERO_H)).relative().child(
+                    img(p).absolute().inset_0().size_full().rounded(px(14.)).object_fit(ObjectFit::Cover),
+                )
+            }))
+            .child(
+                div()
+                    .px(px(20.))
+                    .pt(px(18.))
+                    .pb(px(6.))
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.text()).child("All Photos"))
+                    .child(div().text_size(px(12.)).text_color(theme.secondary()).child(format!("{} items", self.photos.len()))),
+            )
+            .child(div().flex().flex_wrap().justify_around().gap_y(px(18.)).px(px(8.)).pb(px(24.)).children(tiles))
     }
 }
 
@@ -208,24 +452,9 @@ impl Render for Probe {
             }
         }
         let style = self.style;
-        let (text, line) = if style.dark { (rgb(0xf2f2f7), rgb(0x2c2c2e)) } else { (rgb(0x1d1d1f), rgb(0xe5e5e5)) };
-        let rows = (0..80).map(|i| {
-            let hue = (i as f32 * 0.07) % 1.0;
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_4()
-                .h(px(36.))
-                .border_b_1()
-                .border_color(line)
-                .child(div().size(px(18.)).rounded(px(4.)).bg(hsla(hue, 0.75, 0.55, 1.)))
-                .child(div().text_size(px(14.)).text_color(text).child(SharedString::from(format!(
-                    "Quarterly Report {i:02}.pdf — The quick brown fox jumps over the lazy dog"
-                ))))
-        });
-        let hud = format!(
-            "refraction {:.0}  bezel {:.0}  blur {:.2}  dispersion {:.2}  highlight {:.0}  shadow {:.2}  tint {}  {}   ·  R/F E/W B/V D H S T M C 0",
+        let theme = Theme { dark: style.dark };
+        let info = format!(
+            "refraction {:.0}  bezel {:.0}  blur {:.2}  dispersion {:.2}  highlight {:.0}  shadow {:.2}  tint {}  {}",
             style.refraction,
             style.bezel,
             style.blur,
@@ -235,15 +464,13 @@ impl Render for Probe {
             if style.tint.a > 0. { "on" } else { "off" },
             if style.dark { "dark" } else { "light" },
         );
-        let lens = self.lens;
 
         div()
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                let p = e.position;
-                let l = this.lens;
+                let (p, Some(l)) = (e.position, this.lens) else { return };
                 if p.x >= l.x && p.x <= l.x + px(260.) && p.y >= l.y && p.y <= l.y + px(140.) {
                     this.drag = Some(p - l);
                     cx.notify();
@@ -251,57 +478,40 @@ impl Render for Probe {
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if let Some(offset) = this.drag {
-                    this.lens = e.position - offset;
+                    this.lens = Some(e.position - offset);
                     cx.notify();
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| this.drag = None))
             .size_full()
             .relative()
-            .bg(if style.dark { rgb(0x1e1e1e) } else { rgb(0xffffff) })
-            // Content runs under the toolbar: a wallpaper beside a list.
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .flex()
-                    .child(img(std::path::PathBuf::from(WALLPAPER)).w(px(420.)).h_full().object_fit(gpui::ObjectFit::Cover))
-                    .child(
-                        div()
-                            .id("list")
-                            .flex_1()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .pt(px(TOOLBAR_H))
-                            .children(rows),
-                    ),
-            )
-            .child(self.toolbar())
-            // A free lens, for judging the optics at size.
-            .child(div().absolute().left(lens.x).top(lens.y).w(px(260.)).h(px(140.)).child(glass(36., style)))
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(30.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .bg(rgb(0x1d1d1f))
-                    .text_color(rgb(0xffffff))
-                    .text_size(px(12.))
-                    .child(hud),
-            )
+            .bg(theme.bg())
+            .text_color(theme.text())
+            .child(self.content(&theme))
+            .child(self.toolbar(&theme))
+            .child(self.sidebar(&theme, window))
+            .children(self.lens.map(|l| div().absolute().left(l.x).top(l.y).w(px(260.)).h(px(140.)).child(glass(36., style))))
+            .when(self.info, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom(px(10.))
+                        .right(px(10.))
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(8.))
+                        .bg(rgba(0x000000B0))
+                        .text_color(rgb(0xFFFFFF))
+                        .text_size(px(11.))
+                        .child(info),
+                )
+            })
     }
 }
 
-fn initial() -> (GlassStyle, Point<Pixels>, f32) {
+fn main() {
     let mut style = GlassStyle::default();
-    let mut lens = point(px(300.), px(300.));
-    let mut scroll = 0.;
+    let (mut scroll, mut lens, mut info) = (0., None, false);
     for pair in std::env::var("GLASS").unwrap_or_default().split(',') {
         let Some((k, v)) = pair.split_once('=') else { continue };
         let Ok(v) = v.parse::<f32>() else { continue };
@@ -314,29 +524,33 @@ fn initial() -> (GlassStyle, Point<Pixels>, f32) {
             "shadow" => style.shadow = v,
             "dark" => style.dark = v > 0.,
             "tint" => style.tint = hsla(0.58, 0.9, 0.5, v),
-            "x" => lens.x = px(v),
-            "y" => lens.y = px(v),
             "scroll" => scroll = v,
+            "lens" => lens = (v > 0.).then(|| point(px(420.), px(260.))),
+            "info" => info = v > 0.,
             _ => {}
         }
     }
-    (style, lens, scroll)
-}
+    let (photos, hero) = (photos(), hero());
 
-fn main() {
-    gpui_platform::application().with_assets(Assets).run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
+    gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
         cx.open_window(
-            WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions { title: Some("Wallpapers".into()), appears_transparent: true, traffic_light_position: None }),
+                ..Default::default()
+            },
             |_, cx| {
-                let (style, lens, offset) = initial();
                 cx.new(|cx| Probe {
                     focus: cx.focus_handle(),
                     style,
+                    photos,
+                    hero,
+                    scroll: ScrollHandle::new(),
+                    pending_scroll: (scroll > 0.).then_some(scroll),
                     lens,
                     drag: None,
-                    scroll: ScrollHandle::new(),
-                    pending_scroll: (offset > 0.).then_some(offset),
+                    info,
                 })
             },
         )

@@ -1901,6 +1901,7 @@ dependencies = [
  "anyhow",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "rust-embed",
 ]
 
