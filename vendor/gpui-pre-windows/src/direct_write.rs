@@ -78,6 +78,8 @@ struct DirectWriteState {
     fonts: Vec<FontInfo>,
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
+    /// Each font face's `trak` table, by the same key as `font_info_cache`.
+    tracking_cache: HashMap<usize, Option<crate::trak::Tracking>>,
     layout_line_scratch: Vec<u16>,
 }
 
@@ -216,6 +218,7 @@ impl DirectWriteTextSystem {
                 fonts: Vec::new(),
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
+                tracking_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
             }),
         })
@@ -302,11 +305,10 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         _font_id: FontId,
         _font_size: Pixels,
     ) -> TextRenderingMode {
-        if self.components.system_subpixel_rendering {
-            TextRenderingMode::Subpixel
-        } else {
-            TextRenderingMode::Grayscale
-        }
+        // Grayscale, as macOS has drawn text since Mojave, whatever the
+        // system's ClearType setting.
+        let _ = self.components.system_subpixel_rendering;
+        TextRenderingMode::Grayscale
     }
 }
 
@@ -723,10 +725,13 @@ impl DirectWriteState {
                 &mut grid_fit_mode,
             )?;
         }
+        // As Core Text draws: smooth in both directions and never snapped to
+        // the pixel grid, so glyphs keep their designed shapes and weights.
         let rendering_mode = match rendering_mode {
-            DWRITE_RENDERING_MODE1_OUTLINE => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
-            m => m,
+            DWRITE_RENDERING_MODE1_ALIASED => rendering_mode,
+            _ => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
         };
+        let grid_fit_mode = DWRITE_GRID_FIT_MODE_DISABLED;
 
         let antialias_mode = if params.subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1560,6 +1565,15 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
             )?;
 
         let color_font = unsafe { font_face.IsColorFont().as_bool() };
+        // The spacing the font's designer set for this size, as Core Text
+        // applies it on macOS.
+        let tracking = context
+            .text_system
+            .tracking_cache
+            .entry(font_face_key)
+            .or_insert_with(|| read_tracking(font_face))
+            .as_ref()
+            .map_or(0.0, |t| t.at(glyphrun.fontEmSize));
 
         let glyph_ids = unsafe {
             slice_from_nullable(
@@ -1617,6 +1631,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                 });
                 context.width += glyph_advances[this_glyph_idx];
             }
+            context.width += tracking;
             glyph_idx += cluster_glyph_count;
         }
         context.runs.push(ShapedRun { font_id, glyphs });
@@ -1776,6 +1791,28 @@ fn get_font_names_from_collection(
         }
 
         result
+    }
+}
+
+/// The font's `trak` table, if it has one.
+fn read_tracking(font_face: &IDWriteFontFace3) -> Option<crate::trak::Tracking> {
+    let mut data = std::ptr::null_mut();
+    let mut size = 0u32;
+    let mut table_context = std::ptr::null_mut();
+    let mut exists = BOOL(0);
+    unsafe {
+        font_face
+            .TryGetFontTable(u32::from_le_bytes(*b"trak"), &mut data, &mut size, &mut table_context, &mut exists)
+            .ok()?;
+        if !exists.as_bool() || data.is_null() {
+            return None;
+        }
+        let mut metrics = DWRITE_FONT_METRICS1::default();
+        font_face.GetMetrics(&mut metrics);
+        let table = std::slice::from_raw_parts(data as *const u8, size as usize);
+        let tracking = crate::trak::Tracking::parse(table, metrics.Base.designUnitsPerEm);
+        font_face.ReleaseFontTable(table_context);
+        tracking
     }
 }
 
