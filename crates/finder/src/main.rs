@@ -9,6 +9,7 @@ mod files;
 mod icons;
 mod ops;
 mod preview_host;
+mod share;
 mod tags;
 mod text_input;
 mod theme;

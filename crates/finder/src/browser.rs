@@ -891,6 +891,15 @@ impl Browser {
         cx.notify();
     }
 
+    /// Windows' share sheet, for the selection.
+    pub(super) fn share_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(hwnd) = self.hwnd else { return };
+        if let Err(e) = crate::share::share(hwnd, self.selection()) {
+            self.notice = Some(format!("Couldn't share: {e}"));
+            cx.notify();
+        }
+    }
+
     /// Toggles `tag` on the selection.
     pub(super) fn toggle_tag(&mut self, tag: Tag, cx: &mut Context<Self>) {
         let paths = self.selection();
@@ -1298,7 +1307,7 @@ impl Browser {
             )
             .child(
                 capsule("actions")
-                    .child(tool_button("share", "square.and.arrow.up", false))
+                    .child(tool_button("share", "square.and.arrow.up", false).on_click(cx.listener(|this, _, _, cx| this.share_selection(cx))))
                     .child(tool_button("tags", "tag", false).on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_tag_menu(menu_point(e), cx))))
                     .child(tool_button("more", "ellipsis", false).on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_action_menu(menu_point(e), cx)))),
             )
