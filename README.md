@@ -9,8 +9,11 @@ faster than Everything.
 ## Features
 
 - **Finder's look**: traffic-light window controls (with Windows Snap Layouts
-  on the green one), sidebar, Liquid Glass toolbar, inspector, path and status
-  bars, light and dark mode following Windows.
+  on the green one), a translucent sidebar over Windows' Acrylic backdrop, a
+  Liquid Glass toolbar and menus that content scrolls beneath (real
+  refraction and frost, rendered in a fork of GPUI's DirectX renderer),
+  inspector, path and status bars, light and dark mode following Windows.
+  With SF Pro installed locally, text uses the font's own macOS tracking.
 - **Four views**: list (with folders that expand in place), icons, columns and
   gallery, with real Windows icons and thumbnails.
 - **Instant search** across the whole PC as you type, fuzzy and ranked, with
@@ -18,6 +21,10 @@ faster than Everything.
   turn into Finder-style chips, scoped to This PC or the current folder.
 - **Quick Look** (Space): images, text and code, plus PDFs, video and Office
   documents through Windows' own preview handlers.
+- **Color tags**: Finder's seven tags from the toolbar, right-click menu or
+  inspector, shown as dots in every view, with a sidebar view of each tag.
+- **Toolbar actions**: sort menu, Finder's action menu, and Share through
+  Windows' share sheet.
 - **File operations**: rename in place, new folder, duplicate, Recycle Bin,
   copy/cut/paste interoperable with Explorer, drag and drop (including from
   Explorer), a right-click menu, and undo (Ctrl+Z), including putting items
