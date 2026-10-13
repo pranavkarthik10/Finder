@@ -170,6 +170,13 @@ pub fn glass_pressed() -> Rgba {
 pub fn drop_target() -> Rgba {
     if dark() { rgba(0x3D9BFF40) } else { rgba(0x0A7AFF2E) }
 }
+/// Menus are glass too: frostier than the toolbar's, bending less, with a
+/// deeper shadow as they float higher.
+pub fn menu_glass() -> gpui::GlassStyle {
+    gpui::GlassStyle { dark: dark(), blur: 14., refraction: 14., shadow: 0.3, ..Default::default() }
+}
+pub const MENU_RADIUS: f32 = 14.;
+/// Quick Look's panel.
 pub fn menu_bg() -> Rgba {
     if dark() { rgba(0x2C2C2EF5) } else { rgba(0xFAFAFAF5) }
 }

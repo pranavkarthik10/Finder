@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp, QuickLook]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp, QuickLook, ShowActionMenu, ShowSortMenu]
 );
 
 /// Most results a search shows.
@@ -99,6 +99,8 @@ pub struct Browser {
     /// The last operation's failure, shown in the status bar.
     notice: Option<String>,
     menu: Option<menu::Menu>,
+    /// The inspector shows only the modified date (its "Show Less").
+    info_collapsed: bool,
     /// What Ctrl+Z reverses, newest last.
     undo: Vec<Undo>,
     /// The Quick Look panel is up.
@@ -225,6 +227,7 @@ impl Browser {
             renaming: None,
             notice: None,
             menu: None,
+            info_collapsed: false,
             undo: Vec::new(),
             quick_look: false,
             peek: None,
@@ -337,8 +340,14 @@ impl Browser {
         }
     }
 
+    /// A column header click: that key, or the other direction of it.
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
-        self.sort = if self.sort.0 == key { (key, !self.sort.1) } else { (key, true) };
+        let ascending = if self.sort.0 == key { !self.sort.1 } else { true };
+        self.sort_by(key, ascending, cx);
+    }
+
+    pub(super) fn sort_by(&mut self, key: SortKey, ascending: bool, cx: &mut Context<Self>) {
+        self.sort = (key, ascending);
         if let Some(s) = &mut self.search {
             s.sorted = true;
             let sel = self.selected.map(|i| self.rows[i].entry.path.clone());
@@ -1010,6 +1019,12 @@ fn capsule(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .child(glass_surface(t::CAPSULE_H / 2.))
 }
 
+/// Where a button's menu drops from: just below the click.
+fn menu_point(e: &ClickEvent) -> gpui::Point<gpui::Pixels> {
+    let p = e.position();
+    gpui::point(p.x - px(12.), p.y + px(18.))
+}
+
 /// One icon button inside a capsule.
 fn tool_button(id: impl Into<gpui::ElementId>, name: &str, on: bool) -> gpui::Stateful<gpui::Div> {
     div()
@@ -1176,6 +1191,7 @@ impl Browser {
             .child(
                 capsule("group-cap").child(
                     tool_button("group", "square.grid.3x1.below.line.grid.1x2", false)
+                        .on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_sort_menu(menu_point(e), cx)))
                         .gap(px(1.))
                         .child(sym("chevron.down@semibold", 8., t::glass_icon())),
                 ),
@@ -1184,7 +1200,7 @@ impl Browser {
                 capsule("actions")
                     .child(tool_button("share", "square.and.arrow.up", false))
                     .child(tool_button("tags", "tag", false))
-                    .child(tool_button("more", "ellipsis", false)),
+                    .child(tool_button("more", "ellipsis", false).on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_action_menu(menu_point(e), cx)))),
             )
     }
 
@@ -1597,11 +1613,24 @@ impl Browser {
                         .flex()
                         .justify_between()
                         .child(div().font_weight(gpui::FontWeight::BOLD).child("Information"))
-                        .child(div().text_size(px(12.)).text_color(t::accent()).child("Show Less")),
+                        .child(
+                            div()
+                                .id("info-toggle")
+                                .text_size(px(12.))
+                                .text_color(t::accent())
+                                .child(if self.info_collapsed { "Show More" } else { "Show Less" })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.info_collapsed = !this.info_collapsed;
+                                    cx.notify();
+                                })),
+                        ),
                 )
-                .child(info("Created", files::format_date_long(e.created)))
-                .child(info("Modified", files::format_date_long(e.modified)))
-                .child(info("Last opened", files::format_date_long(e.accessed)))
+                .when(!self.info_collapsed, |d| {
+                    d.child(info("Created", files::format_date_long(e.created)))
+                        .child(info("Modified", files::format_date_long(e.modified)))
+                        .child(info("Last opened", files::format_date_long(e.accessed)))
+                })
+                .when(self.info_collapsed, |d| d.child(info("Modified", files::format_date_long(e.modified))))
                 .child(div().mt(px(14.)).mb(px(6.)).font_weight(gpui::FontWeight::BOLD).child("Tags"))
                 .child(div().px(px(6.)).py(px(5.)).rounded(px(5.)).bg(t::bar_bg()).text_color(t::text_tertiary()).child("Add Tags…"));
         }
@@ -1620,7 +1649,8 @@ impl Browser {
                     .text_size(px(t::SMALL_SIZE))
                     .text_color(t::text_secondary())
                     .child(sym("ellipsis.circle", 15., t::text_secondary()))
-                    .child("More…"),
+                    .child("More…")
+                    .on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_action_menu(menu_point(e), cx))),
             ),
         )
     }
@@ -1668,6 +1698,8 @@ impl Render for Browser {
             .on_action(cx.listener(Self::show_columns))
             .on_action(cx.listener(Self::show_gallery))
             .on_action(cx.listener(Self::context_menu_key))
+            .on_action(cx.listener(Self::action_menu_key))
+            .on_action(cx.listener(Self::sort_menu_key))
             .on_action(cx.listener(Self::undo_op))
             .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::escape))
