@@ -31,9 +31,6 @@ pub const WINDOW_H: f32 = 720.;
 pub const WINDOW_MIN_W: f32 = 760.;
 pub const WINDOW_MIN_H: f32 = 420.;
 pub const TOOLBAR_H: f32 = 52.;
-pub fn window_bg() -> Rgba {
-    if dark() { rgb(0x1E1E1E) } else { rgb(0xFFFFFF) }
-}
 
 // Traffic lights
 pub const LIGHT_D: f32 = 14.;
@@ -66,8 +63,10 @@ pub const SIDEBAR_ROW_H: f32 = 30.;
 pub const SIDEBAR_INSET: f32 = 8.;
 /// SF Symbols' point size in the sidebar.
 pub const SIDEBAR_SYMBOL: f32 = 15.;
+/// Translucent, over the window's Acrylic backdrop, like macOS's sidebar
+/// vibrancy.
 pub fn sidebar_bg() -> Rgba {
-    if dark() { rgb(0x262628) } else { rgb(0xF4F4F6) }
+    if dark() { rgba(0x262628A6) } else { rgba(0xF4F4F6A6) }
 }
 pub fn sidebar_selected() -> Rgba {
     if dark() { rgba(0xFFFFFF1A) } else { rgba(0x0000000F) }

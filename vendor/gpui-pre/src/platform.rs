@@ -2730,6 +2730,9 @@ pub enum WindowBackgroundAppearance {
     MicaBackdrop,
     /// The Mica Alt backdrop material, supported on Windows 11.
     MicaAltBackdrop,
+    /// The Acrylic backdrop material, supported on Windows 11: what is behind
+    /// the window, blurred, like macOS's sidebar vibrancy.
+    AcrylicBackdrop,
 }
 
 /// The text rendering mode to use for drawing glyphs.

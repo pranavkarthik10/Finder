@@ -936,6 +936,10 @@ impl PlatformWindow for WindowsWindow {
                 // DWMSBT_TABBEDWINDOW => MicaAlt
                 dwm_set_window_composition_attribute(hwnd, 4);
             }
+            WindowBackgroundAppearance::AcrylicBackdrop => {
+                // DWMSBT_TRANSIENTWINDOW => Acrylic
+                dwm_set_window_composition_attribute(hwnd, 3);
+            }
         }
     }
 

@@ -1676,7 +1676,7 @@ impl Render for Browser {
             .size_full()
             .relative()
             .flex()
-            .bg(t::window_bg())
+            // No fill of its own: the sidebar lets the window's backdrop through.
             .font_family(self.font.clone())
             .text_size(px(t::TEXT_SIZE))
             .text_color(t::text())

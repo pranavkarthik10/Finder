@@ -75,7 +75,8 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions { title: Some("Finder".into()), appears_transparent: true, traffic_light_position: None }),
-                    window_background: WindowBackgroundAppearance::Opaque,
+                    // What is behind the window shows, blurred, through the sidebar.
+                    window_background: WindowBackgroundAppearance::AcrylicBackdrop,
                     window_min_size: Some(size(px(theme::WINDOW_MIN_W), px(theme::WINDOW_MIN_H))),
                     ..Default::default()
                 },
