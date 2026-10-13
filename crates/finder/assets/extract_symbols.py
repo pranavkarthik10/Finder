@@ -26,16 +26,6 @@ trash eject.fill clock sidebar.left xmark minus plus info.circle folder folder.f
 desktopcomputer laptopcomputer globe person.crop.circle arrow.up.arrow.down circle.fill checkmark
 """.split()
 
-# App-icon glyphs for crates/glass_probe's Applications folder.
-SYMBOLS += """
-bag.fill envelope.fill message.fill map.fill calendar book.fill gamecontroller.fill paintbrush.pointed.fill
-photo.fill video.fill phone.fill safari.fill gearshape.fill cloud.sun.fill star.fill bolt.fill heart.fill
-leaf.fill chart.bar.fill headphones music.note camera.fill checklist key.fill lock.fill person.2.fill
-house.fill airplane car.fill tv.fill play.fill film.fill newspaper.fill quote.bubble.fill sparkles
-clock.fill stopwatch.fill timer cpu.fill swift hammer.fill shippingbox.fill puzzlepiece.fill lightbulb.fill
-globe.americas.fill textformat graduationcap.fill dumbbell.fill flame.fill drop.fill
-""".split()
-
 WEIGHTS = {"regular": "SF-Pro-Text-Regular.otf", "medium": "SF-Pro-Text-Medium.otf", "semibold": "SF-Pro-Text-Semibold.otf"}
 
 font_dir, names_json = sys.argv[1], sys.argv[2]

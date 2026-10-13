@@ -1,12 +1,12 @@
-//! Liquid Glass probe: a Finder window in icon view, on an Applications
-//! folder or the Windows wallpapers, with the toolbar's glass capsules
-//! floating over content that scrolls beneath them.
+//! Liquid Glass probe: a Finder window on the Windows wallpapers folder, in
+//! icon view, with the toolbar's glass capsules floating over photos that
+//! scroll beneath them.
 //!
 //! Keys: R/F refraction, E/W bezel, B/V blur, D dispersion, H highlight,
 //! S shadow, T tint, M dark, C clear/regular, 0 reset; L shows a draggable
 //! lens and I the current settings.
 //!
-//! GLASS="scroll=200,blur=0,lens=1,info=1,walls=1,search=1" sets the starting state, for
+//! GLASS="scroll=200,blur=0,lens=1,info=1,search=1" sets the starting state, for
 //! screenshots without driving the keyboard.
 
 use std::{
@@ -26,92 +26,6 @@ const TOOLBAR_H: f32 = 52.;
 const CAPSULE_H: f32 = 36.;
 const SIDEBAR_W: f32 = 206.;
 const HERO_H: f32 = 300.;
-const APP_ICON: f32 = 64.;
-
-/// The Applications folder: a name, a glyph, a hue, and whether the icon is
-/// a light tile with a colored glyph rather than a colored tile.
-const APPS: &[(&str, &str, f32, bool)] = &[
-    ("App Store", "bag.fill", 0.58, false),
-    ("Books", "book.fill", 0.08, false),
-    ("Calculator", "textformat", 0.0, true),
-    ("Calendar", "calendar", 0.0, true),
-    ("Camera", "camera.fill", 0.0, true),
-    ("Chess", "puzzlepiece.fill", 0.75, false),
-    ("Clock", "clock.fill", 0.0, true),
-    ("Compiler", "swift", 0.04, false),
-    ("Contacts", "person.2.fill", 0.1, true),
-    ("Fitness", "dumbbell.fill", 0.33, false),
-    ("Freeform", "paintbrush.pointed.fill", 0.52, false),
-    ("Games", "gamecontroller.fill", 0.97, false),
-    ("Home", "house.fill", 0.09, true),
-    ("Ideas", "lightbulb.fill", 0.13, false),
-    ("Keychain", "key.fill", 0.12, false),
-    ("Learn", "graduationcap.fill", 0.62, false),
-    ("Mail", "envelope.fill", 0.58, false),
-    ("Maps", "map.fill", 0.38, false),
-    ("Messages", "message.fill", 0.36, false),
-    ("Movies", "film.fill", 0.8, false),
-    ("Music", "music.note", 0.98, false),
-    ("News", "newspaper.fill", 0.99, true),
-    ("Packages", "shippingbox.fill", 0.07, false),
-    ("Phone", "phone.fill", 0.36, false),
-    ("Photos", "photo.fill", 0.9, true),
-    ("Podcasts", "headphones", 0.78, false),
-    ("Quotes", "quote.bubble.fill", 0.68, false),
-    ("Reminders", "checklist", 0.6, true),
-    ("Safari", "safari.fill", 0.56, true),
-    ("Security", "lock.fill", 0.0, false),
-    ("Settings", "gearshape.fill", 0.6, true),
-    ("Shortcuts", "sparkles", 0.72, false),
-    ("Stocks", "chart.bar.fill", 0.6, false),
-    ("Stopwatch", "stopwatch.fill", 0.03, false),
-    ("System", "cpu.fill", 0.55, false),
-    ("Timer", "timer", 0.08, true),
-    ("Tools", "hammer.fill", 0.6, false),
-    ("Travel", "airplane", 0.55, false),
-    ("TV", "tv.fill", 0.0, false),
-    ("Video", "video.fill", 0.35, false),
-    ("Weather", "cloud.sun.fill", 0.57, false),
-    ("World", "globe.americas.fill", 0.5, false),
-    ("Wellness", "heart.fill", 0.97, true),
-    ("Energy", "bolt.fill", 0.13, false),
-    ("Garden", "leaf.fill", 0.3, false),
-    ("Favorites", "star.fill", 0.12, false),
-    ("Water", "drop.fill", 0.55, true),
-    ("Hot", "flame.fill", 0.05, false),
-];
-
-#[derive(Clone, Copy, PartialEq)]
-enum Folder {
-    Applications,
-    Wallpapers,
-}
-
-/// An app-style icon: a glossy rounded tile with a symbol on it.
-fn app_icon(glyph: &str, hue: f32, light: bool) -> gpui::Div {
-    let (top, bottom, ink) = if light {
-        (hsla(0., 0., 1., 1.), hsla(0., 0., 0.93, 1.), hsla(hue, 0.85, 0.5, 1.))
-    } else {
-        (hsla(hue, 0.8, 0.62, 1.), hsla(hue, 0.85, 0.45, 1.), hsla(0., 0., 1., 1.))
-    };
-    div()
-        .size(px(APP_ICON))
-        .rounded(px(15.))
-        .bg(gpui::linear_gradient(180., gpui::linear_color_stop(top, 0.), gpui::linear_color_stop(bottom, 1.)))
-        .border(px(0.5))
-        .border_color(hsla(0., 0., 0., 0.08))
-        .shadow(vec![gpui::BoxShadow {
-            color: hsla(0., 0., 0., 0.18),
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(3.),
-            spread_radius: px(0.),
-            inset: false,
-        }])
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(sym(glyph, 26., ink))
-}
 const THUMB_W: f32 = 196.;
 const THUMB_H: f32 = 124.;
 
@@ -231,7 +145,6 @@ fn photos() -> Vec<(SharedString, PathBuf)> {
 struct Probe {
     focus: FocusHandle,
     style: GlassStyle,
-    folder: Folder,
     photos: Vec<(SharedString, PathBuf)>,
     hero: Option<PathBuf>,
     scroll: ScrollHandle,
@@ -280,12 +193,6 @@ fn tool_button(name: &str, on: bool, theme: &Theme) -> gpui::Div {
 }
 
 impl Probe {
-    fn open(&mut self, folder: Folder, cx: &mut Context<Self>) {
-        self.folder = folder;
-        self.scroll.set_offset(point(px(0.), px(0.)));
-        cx.notify();
-    }
-
     fn key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let s = &mut self.style;
         match event.keystroke.key.as_str() {
@@ -310,7 +217,7 @@ impl Probe {
         cx.notify();
     }
 
-    fn sidebar(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&self, theme: &Theme, window: &Window) -> impl IntoElement {
         let header = |title: &'static str| {
             div()
                 .h(px(28.))
@@ -391,15 +298,11 @@ impl Probe {
                     .child(header("Favorites").mt_0())
                     .child(row("airdrop", "AirDrop", false))
                     .child(row("clock", "Recents", false))
-                    .child(row("applications", "Applications", self.folder == Folder::Applications).id("go-apps").on_click(
-                        cx.listener(|this, _, _, cx| this.open(Folder::Applications, cx)),
-                    ))
+                    .child(row("applications", "Applications", false))
                     .child(row("menubar.dock.rectangle", "Desktop", false))
                     .child(row("document", "Documents", false))
                     .child(row("arrow.down.circle", "Downloads", false))
-                    .child(row("folder", "Wallpapers", self.folder == Folder::Wallpapers).id("go-walls").on_click(
-                        cx.listener(|this, _, _, cx| this.open(Folder::Wallpapers, cx)),
-                    ))
+                    .child(row("folder", "Wallpapers", true))
                     .child(header("Locations"))
                     .child(row("icloud", "iCloud Drive", false))
                     .child(row("internaldrive", "Windows (C:)", false))
@@ -464,10 +367,7 @@ impl Probe {
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text())
-                    .child(match self.folder {
-                        Folder::Applications => "Applications",
-                        Folder::Wallpapers => "Wallpapers",
-                    }),
+                    .child("Wallpapers"),
             )
             .child(
                 capsule(s)
@@ -529,38 +429,7 @@ impl Probe {
             )
     }
 
-    fn content(&self, theme: &Theme) -> gpui::AnyElement {
-        match self.folder {
-            Folder::Applications => self.applications(theme).into_any_element(),
-            Folder::Wallpapers => self.wallpapers(theme).into_any_element(),
-        }
-    }
-
-    fn applications(&self, theme: &Theme) -> impl IntoElement {
-        let tiles = APPS.iter().map(|&(name, glyph, hue, light)| {
-            div()
-                .w(px(112.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(7.))
-                .child(app_icon(glyph, hue, light))
-                .child(div().text_size(px(12.)).text_color(theme.text()).child(name))
-        });
-        div()
-            .id("content")
-            .absolute()
-            .top_0()
-            .left(px(SIDEBAR_W))
-            .right_0()
-            .bottom_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .pt(px(TOOLBAR_H + 22.))
-            .child(div().flex().flex_wrap().gap_y(px(26.)).px(px(16.)).pb(px(32.)).children(tiles))
-    }
-
-    fn wallpapers(&self, theme: &Theme) -> impl IntoElement {
+    fn content(&self, theme: &Theme) -> impl IntoElement {
         let hero = self.hero.clone();
         let tiles = self.photos.iter().enumerate().map(|(i, (name, path))| {
             let on = i == 4;
@@ -668,7 +537,7 @@ impl Render for Probe {
             .text_color(theme.text())
             .child(self.content(&theme))
             .child(self.toolbar(&theme, cx))
-            .child(self.sidebar(&theme, window, cx))
+            .child(self.sidebar(&theme, window))
             .children(self.lens.map(|l| div().absolute().left(l.x).top(l.y).w(px(260.)).h(px(140.)).child(glass(36., style))))
             .when(self.info, |d| {
                 d.child(
@@ -706,7 +575,7 @@ fn load_local_fonts(cx: &mut App) {
 
 fn main() {
     let mut style = GlassStyle::default();
-    let (mut scroll, mut lens, mut info, mut walls, mut search) = (0., None, false, false, false);
+    let (mut scroll, mut lens, mut info, mut search) = (0., None, false, false);
     for pair in std::env::var("GLASS").unwrap_or_default().split(',') {
         let Some((k, v)) = pair.split_once('=') else { continue };
         let Ok(v) = v.parse::<f32>() else { continue };
@@ -722,7 +591,6 @@ fn main() {
             "scroll" => scroll = v,
             "lens" => lens = (v > 0.).then(|| point(px(420.), px(260.))),
             "info" => info = v > 0.,
-            "walls" => walls = v > 0.,
             "search" => search = v > 0.,
             _ => {}
         }
@@ -731,7 +599,7 @@ fn main() {
 
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         load_local_fonts(cx);
-        let bounds = Bounds::centered(None, size(px(1000.), px(620.)), cx);
+        let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -741,7 +609,6 @@ fn main() {
             |_, cx| {
                 cx.new(|cx| Probe {
                     focus: cx.focus_handle(),
-                    folder: if walls { Folder::Wallpapers } else { Folder::Applications },
                     style,
                     photos,
                     hero,
