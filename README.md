@@ -4,7 +4,7 @@ A macOS-style Finder for Windows, built with [GPUI](https://gpui.rs) (Zed's
 GPU-accelerated UI framework) on a whole-disk search index that finds files
 faster than Everything.
 
-![Finder in dark mode, list view with the inspector](docs/screenshots/list-dark.png)
+![Finder in dark mode: icon view under the Liquid Glass toolbar, with color tags and the inspector](docs/screenshots/icons-dark.png)
 
 ## Features
 

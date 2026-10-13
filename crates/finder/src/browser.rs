@@ -103,6 +103,8 @@ pub struct Browser {
     /// The inspector shows only the modified date (its "Show Less").
     info_collapsed: bool,
     tags: Tags,
+    /// FINDER_SCROLL_TO's row, and frames waited so far.
+    pending_scroll: Option<(usize, u8)>,
     /// What Ctrl+Z reverses, newest last.
     undo: Vec<Undo>,
     /// The Quick Look panel is up.
@@ -233,6 +235,7 @@ impl Browser {
             menu: None,
             info_collapsed: false,
             tags: Tags::load(),
+            pending_scroll: None,
             undo: Vec::new(),
             quick_look: false,
             peek: None,
@@ -266,10 +269,9 @@ impl Browser {
             b.show_tag(tag, cx);
         }
         // FINDER_SCROLL_TO=n scrolls row n (of the list, or of the icon
-        // grid) to just under the toolbar, so content runs beneath it.
-        if let Some(n) = std::env::var("FINDER_SCROLL_TO").ok().and_then(|n| n.parse().ok()) {
-            b.scroll.scroll_to_item(n, ScrollStrategy::Top);
-        }
+        // grid) to just under the toolbar, so content runs beneath it, once
+        // the window has its size.
+        b.pending_scroll = std::env::var("FINDER_SCROLL_TO").ok().and_then(|n| n.parse().ok()).map(|n| (n, 0));
         // FINDER_SEARCH="..." types a search at startup (for testing
         // without driving the keyboard).
         if let Ok(q) = std::env::var("FINDER_SEARCH") {
@@ -1813,6 +1815,14 @@ impl Render for Browser {
         };
         t::set_dark(dark);
         self.scale = window.scale_factor();
+        if let Some((row, waited)) = self.pending_scroll.take() {
+            if waited < 5 {
+                self.pending_scroll = Some((row, waited + 1));
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+            } else {
+                self.scroll.scroll_to_item_strict(row, ScrollStrategy::Top);
+            }
+        }
         if !self.quick_look && self.preview.is_some() {
             let me = cx.entity();
             cx.defer(move |cx| me.update(cx, |this, cx| this.sync_preview(None, cx)));
