@@ -9,8 +9,11 @@ type Run = Rc<dyn Fn(&mut Browser, &mut Window, &mut Context<Browser>)>;
 
 pub(super) enum Item {
     Action { label: SharedString, shortcut: Option<&'static str>, action: Box<dyn Action>, enabled: bool, checked: bool },
-    /// A choice that carries data, like "sort by Size".
-    Call { label: SharedString, run: Run, enabled: bool, checked: bool },
+    /// A choice that carries data, like "sort by Size", with an optional
+    /// color dot (a tag's).
+    Call { label: SharedString, run: Run, enabled: bool, checked: bool, dot: Option<gpui::Hsla> },
+    /// Finder's row of tag colors: click one to toggle it on the selection.
+    Swatches(Vec<(Tag, bool)>),
     /// A section title, like "Sort By".
     Header(SharedString),
     Separator,
@@ -26,13 +29,13 @@ fn item(label: &str, shortcut: Option<&'static str>, action: impl Action, enable
 }
 
 fn call(label: &str, run: impl Fn(&mut Browser, &mut Window, &mut Context<Browser>) + 'static) -> Item {
-    Item::Call { label: label.to_string().into(), run: Rc::new(run), enabled: true, checked: false }
+    Item::Call { label: label.to_string().into(), run: Rc::new(run), enabled: true, checked: false, dot: None }
 }
 
 fn check(i: Item, on: bool) -> Item {
     match i {
         Item::Action { label, shortcut, action, enabled, .. } => Item::Action { label, shortcut, action, enabled, checked: on },
-        Item::Call { label, run, enabled, .. } => Item::Call { label, run, enabled, checked: on },
+        Item::Call { label, run, enabled, dot, .. } => Item::Call { label, run, enabled, checked: on, dot },
         other => other,
     }
 }
@@ -77,7 +80,32 @@ impl Browser {
             item(&format!("Copy{what}"), Some("Ctrl+C"), CopyFiles, true),
             item("Copy as Pathname", Some("Ctrl+Alt+C"), CopyPath, true),
             item("Paste Item", Some("Ctrl+V"), PasteFiles, can_paste),
+            Item::Separator,
+            Item::Swatches(self.tag_states()),
         ]
+    }
+
+    /// Each tag, and whether everything selected has it.
+    fn tag_states(&self) -> Vec<(Tag, bool)> {
+        let sel = self.selection();
+        Tag::ALL.into_iter().map(|t| (t, !sel.is_empty() && sel.iter().all(|p| self.tags.of(p).contains(&t)))).collect()
+    }
+
+    /// The toolbar's tag button (and the inspector's tag field): each tag,
+    /// checked if everything selected has it.
+    pub(super) fn open_tag_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let any = !self.selection().is_empty();
+        let mut items = vec![Item::Header(if any { "Tags".into() } else { "Select items to tag".into() })];
+        for (tag, on) in self.tag_states() {
+            items.push(Item::Call {
+                label: tag.name().into(),
+                run: Rc::new(move |this: &mut Browser, _: &mut Window, cx: &mut Context<Browser>| this.toggle_tag(tag, cx)),
+                enabled: any,
+                checked: on,
+                dot: Some(tag.color()),
+            });
+        }
+        self.show_menu(at, items, cx);
     }
 
     /// What can be done in the folder itself.
@@ -167,7 +195,31 @@ impl Browser {
                     .text_color(t::text_secondary())
                     .child(label.clone())
                     .into_any_element(),
-                Item::Call { label, run, enabled, checked } => {
+                Item::Swatches(states) => div()
+                    .h(px(28.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .children(states.iter().enumerate().map(|(k, &(tag, on))| {
+                        div()
+                            .id(("swatch", k))
+                            .size(px(16.))
+                            .rounded_full()
+                            .bg(tag.color())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.border_2().border_color(gpui::white()))
+                            .when(on, |d| d.child(sym("checkmark@semibold", 7., gpui::white())))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.menu = None;
+                                window.focus(&this.focus, cx);
+                                this.toggle_tag(tag, cx);
+                            }))
+                    }))
+                    .into_any_element(),
+                Item::Call { label, run, enabled, checked, dot } => {
                     let run = run.clone();
                     let enabled = *enabled;
                     div()
@@ -181,6 +233,7 @@ impl Browser {
                         .when(!enabled, |d| d.text_color(t::text_tertiary()))
                         .when(enabled, |d| d.hover(|s| s.bg(t::selection()).text_color(gpui::white())))
                         .child(div().w(px(16.)).flex().justify_center().when(*checked, |d| d.child(sym("checkmark@semibold", 9., t::text()))))
+                        .children(dot.map(|c| div().size(px(10.)).mr(px(7.)).rounded_full().bg(c)))
                         .child(label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if !enabled {
@@ -267,6 +320,12 @@ impl Browser {
     pub(super) fn sort_menu_key(&mut self, _: &ShowSortMenu, window: &mut Window, cx: &mut Context<Self>) {
         let at = gpui::point(window.viewport_size().width - px(t::INSPECTOR_W + 300.), px(t::TOOLBAR_H - 6.));
         self.open_sort_menu(at, cx);
+    }
+
+    /// The tag menu without a click: under the toolbar's tag button.
+    pub(super) fn tag_menu_key(&mut self, _: &ShowTagMenu, window: &mut Window, cx: &mut Context<Self>) {
+        let at = gpui::point(window.viewport_size().width - px(t::INSPECTOR_W + 200.), px(t::TOOLBAR_H - 6.));
+        self.open_tag_menu(at, cx);
     }
 
     /// Shift+F10 / the menu key: the menu for the selection, by the list.

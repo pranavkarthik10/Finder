@@ -175,6 +175,7 @@ impl Browser {
                             .when(sel && focused, |d| d.text_color(gpui::white()))
                             .child(icon_label(&e.name)),
                     ))
+                    .child(tag_dots(self.tags.of(&e.path), 8.))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         window.focus(&this.focus, cx);
                         if ev.click_count() >= 2 { this.open_row(ix, cx) } else { this.click_select(ix, &ev.modifiers(), cx) }

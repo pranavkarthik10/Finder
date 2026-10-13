@@ -7,6 +7,7 @@ use crate::clipboard;
 use crate::ops;
 use crate::text_input::{self, TextInput};
 use crate::theme as t;
+use crate::tags::{Tag, Tags};
 
 mod dnd;
 mod menu;
@@ -24,7 +25,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 actions!(
     finder,
-    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp, QuickLook, ShowActionMenu, ShowSortMenu]
+    [SelectNext, SelectPrev, Expand, Collapse, Open, GoBack, GoForward, GoUp, FocusSearch, EndSearch, SelectAll, Rename, NewFolder, Duplicate, Trash, CopyFiles, CutFiles, PasteFiles, CopyPath, Reveal, ShowIcons, ShowList, ShowColumns, ShowGallery, ContextMenu, UndoOp, QuickLook, ShowActionMenu, ShowSortMenu, ShowTagMenu]
 );
 
 /// Most results a search shows.
@@ -101,6 +102,7 @@ pub struct Browser {
     menu: Option<menu::Menu>,
     /// The inspector shows only the modified date (its "Show Less").
     info_collapsed: bool,
+    tags: Tags,
     /// What Ctrl+Z reverses, newest last.
     undo: Vec<Undo>,
     /// The Quick Look panel is up.
@@ -149,6 +151,8 @@ struct Search {
     error: Option<String>,
     /// Sorted by a column; else by relevance.
     sorted: bool,
+    /// Showing everything with this tag (from the sidebar), not a query.
+    tag: Option<Tag>,
 }
 
 enum Icon {
@@ -228,6 +232,7 @@ impl Browser {
             notice: None,
             menu: None,
             info_collapsed: false,
+            tags: Tags::load(),
             undo: Vec::new(),
             quick_look: false,
             peek: None,
@@ -255,6 +260,10 @@ impl Browser {
         };
         if let Ok(name) = std::env::var("FINDER_SELECT") {
             b.select_by_name(&name, cx);
+        }
+        // FINDER_TAG=Red opens that tag's view, as its sidebar row does.
+        if let Some(tag) = std::env::var("FINDER_TAG").ok().and_then(|n| Tag::ALL.into_iter().find(|t| t.name().eq_ignore_ascii_case(&n))) {
+            b.show_tag(tag, cx);
         }
         // FINDER_SCROLL_TO=n scrolls row n (of the list, or of the icon
         // grid) to just under the toolbar, so content runs beneath it.
@@ -512,7 +521,14 @@ impl Browser {
             let res = cx.background_spawn(async move { op() }).await;
             let _ = this.update(cx, |b, cx| {
                 match res {
-                    Ok(()) => b.undo.extend(undo),
+                    Ok(()) => {
+                        if let Some(Undo::Moved(pairs)) = &undo {
+                            for (now, was) in pairs {
+                                b.tags.moved(was, now);
+                            }
+                        }
+                        b.undo.extend(undo)
+                    }
                     Err(e) => b.notice = Some(e),
                 }
                 b.refresh(&after, cx);
@@ -529,11 +545,15 @@ impl Browser {
         let Some(u) = self.undo.pop() else { return };
         match u {
             Undo::Rename { from, to } => {
+                self.tags.moved(&to, &from);
                 let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.run_op(move || ops::rename(&to, &name).map(|_| ()), vec![from], None, cx);
             }
             Undo::Created(paths) => self.run_op(move || ops::run(ops::Op::Recycle, &paths, None), Vec::new(), None, cx),
             Undo::Moved(pairs) => {
+                for (now, was) in &pairs {
+                    self.tags.moved(now, was);
+                }
                 let back: Vec<PathBuf> = pairs.iter().map(|(_, was)| was.clone()).collect();
                 self.run_op(
                     move || {
@@ -705,6 +725,7 @@ impl Browser {
         match ops::rename(&r.path, &name) {
             Ok(to) => {
                 self.notice = None;
+                self.tags.moved(&r.path, &to);
                 self.undo.push(Undo::Rename { from: r.path.clone(), to: to.clone() });
                 self.refresh(&[to], cx);
             }
@@ -754,6 +775,9 @@ impl Browser {
         let typed = raw.trim();
         let text = self.chips.iter().map(|(k, v)| format!("{k}:{v}")).chain((!typed.is_empty()).then(|| typed.to_string())).collect::<Vec<_>>().join(" ");
         if text.is_empty() {
+            if self.search.as_ref().is_some_and(|s| s.tag.is_some()) {
+                return;
+            }
             if self.search.take().is_some() {
                 let cur = self.current.clone();
                 self.load(cur);
@@ -761,8 +785,11 @@ impl Browser {
             }
             return;
         }
+        if self.search.as_ref().is_some_and(|s| s.tag.is_some()) {
+            self.search = None;
+        }
         if self.search.is_none() {
-            self.search = Some(Search { root: self.current.clone(), scope: Scope::ThisPc, took: None, capped: false, error: None, sorted: false });
+            self.search = Some(Search { root: self.current.clone(), scope: Scope::ThisPc, took: None, capped: false, error: None, sorted: false, tag: None });
         }
         self.run_search(text, cx);
     }
@@ -847,6 +874,32 @@ impl Browser {
             s.scope = scope;
             self.query_changed(cx);
         }
+    }
+
+    /// Everything tagged `tag`, as Finder's sidebar tags show it.
+    pub(super) fn show_tag(&mut self, tag: Tag, cx: &mut Context<Self>) {
+        self.chips.clear();
+        self.search_gen += 1;
+        self.search = Some(Search { root: self.current.clone(), scope: Scope::ThisPc, took: None, capped: false, error: None, sorted: true, tag: Some(tag) });
+        self.search_input.update(cx, |i, cx| i.set_text("", cx));
+        let mut v: Vec<Entry> = self.tags.tagged(tag).into_iter().filter_map(Entry::from_path).collect();
+        files::sort(&mut v, self.sort.0, self.sort.1);
+        self.rows = v.into_iter().map(|entry| Row { entry, depth: 0, expanded: false }).collect();
+        self.selected = None;
+        self.marked.clear();
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Toggles `tag` on the selection.
+    pub(super) fn toggle_tag(&mut self, tag: Tag, cx: &mut Context<Self>) {
+        let paths = self.selection();
+        self.tags.toggle(&paths, tag);
+        // A tag view drops what no longer has its tag.
+        if let Some(t) = self.search.as_ref().and_then(|s| s.tag) {
+            self.show_tag(t, cx);
+        }
+        cx.notify();
     }
 
     /// Leave search: clear the field, back to the folder.
@@ -1019,6 +1072,19 @@ fn capsule(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .child(glass_surface(t::CAPSULE_H / 2.))
 }
 
+/// Tag colors as overlapping dots, as Finder shows them beside a name.
+pub(super) fn tag_dots(tags: &[Tag], d: f32) -> impl IntoElement {
+    div().flex().flex_none().children(tags.iter().enumerate().map(move |(i, tag)| {
+        div()
+            .size(px(d))
+            .rounded_full()
+            .bg(tag.color())
+            .border(px(1.))
+            .border_color(t::content_bg())
+            .when(i > 0, |el| el.ml(px(-d * 0.4)))
+    }))
+}
+
 /// Where a button's menu drops from: just below the click.
 fn menu_point(e: &ClickEvent) -> gpui::Point<gpui::Pixels> {
     let p = e.position();
@@ -1094,7 +1160,7 @@ impl Browser {
                     .child(s.title),
             );
             for (pi, p) in s.places.iter().enumerate() {
-                let on = p.path.as_deref() == Some(self.current.as_path());
+                let on = p.path.as_deref() == Some(self.current.as_path()) && self.search.as_ref().is_none_or(|s| s.tag.is_none());
                 let path = p.path.clone();
                 let tint = if on { t::accent() } else { t::sidebar_icon() };
                 col = col.child(
@@ -1119,6 +1185,39 @@ impl Browser {
                 );
             }
         }
+        let showing = self.search.as_ref().and_then(|s| s.tag);
+        col = col.child(
+            div()
+                .h(px(28.))
+                .mt(px(8.))
+                .px(px(10.))
+                .flex()
+                .flex_none()
+                .items_end()
+                .pb(px(6.))
+                .text_size(px(t::SMALL_SIZE))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(t::sidebar_header())
+                .child("Tags"),
+        );
+        for (i, tag) in Tag::ALL.into_iter().enumerate() {
+            let on = showing == Some(tag);
+            col = col.child(
+                div()
+                    .id(("tag", i))
+                    .h(px(t::SIDEBAR_ROW_H))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .px(px(8.))
+                    .rounded(px(10.))
+                    .when(on, |d| d.bg(t::sidebar_selected()))
+                    .child(div().w(px(22.)).flex().justify_center().child(div().size(px(10.)).rounded_full().bg(tag.color())))
+                    .child(div().text_size(px(t::TEXT_SIZE)).when(on, |d| d.text_color(t::accent())).child(tag.name()))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.show_tag(tag, cx))),
+            );
+        }
         // Flush with the window's edges (macOS 27 dropped Tahoe's floating
         // panel), divided from the content by a hairline.
         div()
@@ -1139,6 +1238,7 @@ impl Browser {
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match &self.search {
+            Some(Search { tag: Some(tag), .. }) => tag.name().to_string(),
             Some(s) if s.scope == Scope::Folder => format!("Searching \u{201c}{}\u{201d}", files::display_name(&s.root)),
             Some(_) => "Searching \u{201c}This PC\u{201d}".to_string(),
             None => files::display_name(&self.current),
@@ -1199,7 +1299,7 @@ impl Browser {
             .child(
                 capsule("actions")
                     .child(tool_button("share", "square.and.arrow.up", false))
-                    .child(tool_button("tags", "tag", false))
+                    .child(tool_button("tags", "tag", false).on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_tag_menu(menu_point(e), cx))))
                     .child(tool_button("more", "ellipsis", false).on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_action_menu(menu_point(e), cx)))),
             )
     }
@@ -1224,10 +1324,15 @@ impl Browser {
                     .size_full(),
             )
             .child(self.toolbar(cx))
-            .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
+            .when(self.searching_query(), |d| d.child(self.scope_bar(cx)))
             // The column header draws its own hairline beneath it.
             .when(header, |d| d.child(self.column_header(cx)))
             .when(!header, |d| d.child(div().h(px(1.)).flex_none().bg(t::separator())))
+    }
+
+    /// A typed search (with its scope bar), rather than a tag view.
+    fn searching_query(&self) -> bool {
+        self.search.as_ref().is_some_and(|s| s.tag.is_none())
     }
 
     /// How far the toolbar band reaches down over the content, so views
@@ -1235,7 +1340,7 @@ impl Browser {
     pub(super) fn band_h(&self) -> f32 {
         let header = self.error.is_none() && self.shown_view() == ViewMode::List;
         t::TOOLBAR_H
-            + if self.search.is_some() { t::SCOPE_BAR_H } else { 0. }
+            + if self.searching_query() { t::SCOPE_BAR_H } else { 0. }
             + if header { t::HEADER_H } else { 1. }
     }
 
@@ -1428,7 +1533,15 @@ impl Browser {
                                     .child(img(src).size(px(t::ROW_ICON)).flex_none().ml(px(2.)).mr(px(6.)))
                                     .child(match rename {
                                         Some(b) => b,
-                                        None => div().flex_1().min_w_0().truncate().child(r.entry.name.clone()).into_any_element(),
+                                        None => div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.))
+                                            .child(div().min_w_0().truncate().child(r.entry.name.clone()))
+                                            .child(tag_dots(self.tags.of(&r.entry.path), 8.))
+                                            .into_any_element(),
                                     }),
                             )
                             .child(div().w(px(t::DATE_W)).px(px(9.)).truncate().text_color(fg2).child(files::format_date(r.entry.modified)))
@@ -1532,7 +1645,8 @@ impl Browser {
             (1, None) => "1 item".to_string(),
             (n, None) => format!("{n} items"),
         };
-        if let Some(s) = &self.search {
+        // A tag view isn't a search: it counts like a folder.
+        if let Some(s) = self.search.as_ref().filter(|s| s.tag.is_none()) {
             let text = match (&s.error, s.took) {
                 (Some(e), _) => e.clone(),
                 (None, Some(took)) => {
@@ -1632,7 +1746,31 @@ impl Browser {
                 })
                 .when(self.info_collapsed, |d| d.child(info("Modified", files::format_date_long(e.modified))))
                 .child(div().mt(px(14.)).mb(px(6.)).font_weight(gpui::FontWeight::BOLD).child("Tags"))
-                .child(div().px(px(6.)).py(px(5.)).rounded(px(5.)).bg(t::bar_bg()).text_color(t::text_tertiary()).child("Add Tags…"));
+                .child({
+                    let tags = self.tags.of(&e.path).to_vec();
+                    div()
+                        .id("tag-field")
+                        .px(px(6.))
+                        .py(px(5.))
+                        .rounded(px(5.))
+                        .bg(t::bar_bg())
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(6.))
+                        .when(tags.is_empty(), |d| d.text_color(t::text_tertiary()).child("Add Tags…"))
+                        .children(tags.into_iter().map(|tag| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .px(px(6.))
+                                .rounded(px(5.))
+                                .bg(t::glass_pressed())
+                                .child(div().size(px(8.)).rounded_full().bg(tag.color()))
+                                .child(tag.name())
+                        }))
+                        .on_click(cx.listener(|this, e: &ClickEvent, _, cx| this.open_tag_menu(menu_point(e), cx)))
+                });
         }
         col.child(div().flex_1()).child(
             div().flex().justify_center().child(
@@ -1700,6 +1838,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::context_menu_key))
             .on_action(cx.listener(Self::action_menu_key))
             .on_action(cx.listener(Self::sort_menu_key))
+            .on_action(cx.listener(Self::tag_menu_key))
             .on_action(cx.listener(Self::undo_op))
             .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::escape))
