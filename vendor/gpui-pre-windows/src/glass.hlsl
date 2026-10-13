@@ -2,10 +2,10 @@
 // the band its rim samples) out of the frame, optionally frosts it with a
 // separable blur at half resolution, then composites the surface: the rim
 // bends the backdrop toward the center, the body is toned like the material,
-// and a thin specular rim and side shade sit on top.
+// and an even hairline rim sits on top, as on macOS.
 //
 // Optics follow Glass-HQ/liquid-glass (MIT): a circular bezel profile for the
-// displacement, its calibrated tone curves, and its rim light model.
+// displacement and its calibrated tone curves.
 
 cbuffer GlassParams: register(b2) {
     float4 g_shape;    // surface origin.xy, size.xy (device px)
@@ -202,27 +202,12 @@ float4 glass_fragment(GlassVertexOutput input): SV_Target {
         color = lerp(color, tinted, g_tint.a);
     }
 
+    // The rim: one even hairline just inside the outline, as macOS draws
+    // its toolbar glass (darker in the light, lighter in the dark), rather
+    // than iOS's directional specular and side shade.
     bool dark = g_misc.z > 0.5;
-    // Specular: light from above and below, kept off the side outline.
-    float cone = 1.08;
-    float directional = pow(sat((abs(n.y) - cos(cone)) / (1.0 - cos(cone))), 1.25);
-    float diffuse_dir = pow(sat((abs(n.y) - cos(cone * 0.65)) / (1.0 - cos(cone * 0.65))), 1.25);
-    float stroke = sat((d + 0.9) / aa + 0.5) * sat(0.5 - d / aa);
-    float specular = directional * stroke;
-    specular = specular / (1.0 + 0.5 * (1.0 - specular));
-    float diffuse = diffuse_dir * 0.18 * pow(1.0 - sat(-d / 4.5), 2.0) * coverage;
-    float highlight = sat(specular * (dark ? 0.82 : 1.0) + diffuse * (dark ? 0.40 : 1.0));
-    // Shade: a dark rim down the sides.
-    float adjusted = d - 0.5;
-    float falloff = 1.0 - sat(-adjusted / 0.5);
-    float ramp = lerp(falloff > 0.0 ? 1.0 : 0.0, falloff, 0.75);
-    float outline = ramp * sat((adjusted + 0.5) / aa + 0.5) * sat(-adjusted / aa + 0.5);
-    float side = 0.98;
-    float2 weights = saturate((float2(n.x, -n.x) - cos(side)) / (1.0 - cos(side))) * outline;
-    float shade = dot(weights / (1.0 + 0.4 * (1.0 - weights)), float2(1.0, 1.0)) * (dark ? 0.60 : 0.48);
-    float overlay = (highlight + shade * (1.0 - highlight)) * g_misc.y;
-    float light = (dark ? 0.82 : 1.0) * highlight / max(highlight + shade * (1.0 - highlight), 0.00001);
-    color = lerp(color, light.xxx, overlay);
+    float rim = sat((d + 1.0) / aa + 0.5) * coverage;
+    color = lerp(color, dark ? float3(1.0, 1.0, 1.0) : float3(0.0, 0.0, 0.0), rim * (dark ? 0.16 : 0.10) * g_misc.y);
 
     return float4(color, coverage);
 }

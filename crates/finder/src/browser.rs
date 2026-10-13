@@ -253,6 +253,11 @@ impl Browser {
         if let Ok(name) = std::env::var("FINDER_SELECT") {
             b.select_by_name(&name, cx);
         }
+        // FINDER_SCROLL_TO=n scrolls row n (of the list, or of the icon
+        // grid) to just under the toolbar, so content runs beneath it.
+        if let Some(n) = std::env::var("FINDER_SCROLL_TO").ok().and_then(|n| n.parse().ok()) {
+            b.scroll.scroll_to_item(n, ScrollStrategy::Top);
+        }
         // FINDER_SEARCH="..." types a search at startup (for testing
         // without driving the keyboard).
         if let Ok(q) = std::env::var("FINDER_SEARCH") {
@@ -980,10 +985,21 @@ fn sym(name: &str, pt: f32, color: impl Into<gpui::Hsla>) -> gpui::Svg {
     svg().path(symbol(name)).size(px(pt * 1.25)).flex_none().text_color(color.into())
 }
 
+/// Liquid Glass filling its (relative) parent: the content beneath it,
+/// frosted and bent at the rim.
+fn glass_surface(radius: f32) -> impl IntoElement {
+    gpui::canvas(|_, _, _| (), move |bounds, _, window, _| window.paint_glass(bounds, px(radius), t::glass_style()))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+}
+
 /// A Liquid Glass capsule floating over the content, holding buttons.
 fn capsule(id: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .relative()
         .h(px(t::CAPSULE_H))
         .flex_none()
         .flex()
@@ -991,10 +1007,7 @@ fn capsule(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .px(px(4.))
         .gap(px(2.))
         .rounded_full()
-        .bg(t::glass())
-        .border(px(0.5))
-        .border_color(t::glass_border())
-        .shadow(t::glass_shadow())
+        .child(glass_surface(t::CAPSULE_H / 2.))
 }
 
 /// One icon button inside a capsule.
@@ -1175,6 +1188,41 @@ impl Browser {
             )
     }
 
+    /// Everything above the content, floating over it: the toolbar, the
+    /// search scope bar and the list's column header, on a veil that
+    /// content scrolling beneath them shows through.
+    fn toolbar_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = self.error.is_none() && self.shown_view() == ViewMode::List;
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .flex()
+            .flex_col()
+            .child(
+                gpui::canvas(|_, _, _| (), |bounds, _, window, _| window.paint_scroll_edge(bounds, t::scroll_edge(), t::SCROLL_EDGE_BLUR))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+            .child(self.toolbar(cx))
+            .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
+            // The column header draws its own hairline beneath it.
+            .when(header, |d| d.child(self.column_header(cx)))
+            .when(!header, |d| d.child(div().h(px(1.)).flex_none().bg(t::separator())))
+    }
+
+    /// How far the toolbar band reaches down over the content, so views
+    /// start their content below it.
+    pub(super) fn band_h(&self) -> f32 {
+        let header = self.error.is_none() && self.shown_view() == ViewMode::List;
+        t::TOOLBAR_H
+            + if self.search.is_some() { t::SCOPE_BAR_H } else { 0. }
+            + if header { t::HEADER_H } else { 1. }
+    }
+
     /// The inspector column's own strip of toolbar: the search field.
     fn search_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.search_input.focus_handle(cx).is_focused(window);
@@ -1236,7 +1284,7 @@ impl Browser {
         };
         let plain = |id: &'static str, label: &'static str| div().id(id).px(px(9.)).py(px(3.)).rounded(px(6.)).hover(|d| d.bg(t::glass_pressed())).child(label);
         div()
-            .h(px(32.))
+            .h(px(t::SCOPE_BAR_H))
             .flex_none()
             .flex()
             .items_center()
@@ -1390,11 +1438,16 @@ impl Browser {
     fn list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let fill = (window.viewport_size().height / px(t::ROW_H)).ceil() as usize;
         let body: AnyElement = if let Some(e) = &self.error {
-            div().flex_1().flex().items_center().justify_center().text_color(t::text_secondary()).child(e.clone()).into_any_element()
+            div().flex_1().pt(px(self.band_h())).flex().items_center().justify_center().text_color(t::text_secondary()).child(e.clone()).into_any_element()
         } else {
-            uniform_list("rows", self.rows.len().max(fill), cx.processor(Self::render_rows)).flex_1().track_scroll(&self.scroll).into_any_element()
+            uniform_list("rows", self.rows.len().max(fill), cx.processor(Self::render_rows))
+                .flex_1()
+                .pt(px(self.band_h()))
+                .track_scroll(&self.scroll)
+                .into_any_element()
         };
-        div().flex_1().min_h_0().flex().flex_col().child(self.column_header(cx)).child(body)
+        // The column header floats over the rows, in the toolbar band.
+        div().flex_1().min_h_0().flex().flex_col().child(body)
     }
 
     fn path_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1641,17 +1694,18 @@ impl Render for Browser {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .relative()
                             .flex()
                             .flex_col()
-                            .child(self.toolbar(cx))
-                            .when(self.search.is_some(), |d| d.child(self.scope_bar(cx)))
+                            // The view runs to the top; the toolbar band floats over it.
                             .child({
                                 let view = self.main_view(window, cx);
                                 let el = div().id("view-drop").flex_1().min_h_0().flex().flex_col().child(view);
                                 if self.search.is_none() { dnd::folder_target(el, self.current.clone(), cx).into_any_element() } else { el.into_any_element() }
                             })
                             .child(self.path_bar(cx))
-                            .child(self.status_bar()),
+                            .child(self.status_bar())
+                            .child(self.toolbar_band(cx)),
                     )
                     .child(
                         div()

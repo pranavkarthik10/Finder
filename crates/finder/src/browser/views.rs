@@ -128,6 +128,7 @@ impl Browser {
         let rows = self.rows.len().div_ceil(cols);
         uniform_list("grid", rows, cx.processor(move |this, range: Range<usize>, window, cx| range.map(|r| this.grid_row(r, cols, window, cx)).collect::<Vec<_>>()))
             .flex_1()
+            .pt(px(self.band_h()))
             .track_scroll(&self.scroll)
             .into_any_element()
     }
@@ -210,13 +211,16 @@ impl Browser {
 
     fn column_view(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_columns();
+        let band = self.band_h();
         let mut strip = div().id("columns").flex_1().min_h_0().flex().overflow_x_scroll().track_scroll(&self.col_scroll);
         for k in 0..self.columns.len() {
             let n = self.columns[k].entries.len();
             let list = uniform_list(("column", k), n, cx.processor(move |this, range: Range<usize>, window, cx| this.column_rows(k, range, window, cx)))
                 .size_full()
+                .pt(px(band + 4.))
+                .pb(px(4.))
                 .track_scroll(&self.columns[k].scroll);
-            strip = strip.child(div().w(px(COLUMN_W)).h_full().flex_none().py(px(4.)).border_r_1().border_color(t::separator()).child(list));
+            strip = strip.child(div().w(px(COLUMN_W)).h_full().flex_none().border_r_1().border_color(t::separator()).child(list));
         }
         if let Some(e) = self.columns.last().and_then(|c| c.sel.map(|i| c.entries[i].clone())).filter(|e| !e.is_dir) {
             strip = strip.child(self.column_preview(e, window, cx));
@@ -336,6 +340,7 @@ impl Browser {
             .flex_col()
             .items_center()
             .p(px(16.))
+            .pt(px(self.band_h() + 16.))
             .gap(px(4.))
             .child(div().h(px(200.)).w_full().flex().items_center().justify_center().child(img(src).when(pictured, |i| i.w(px(220.)).h(px(190.))).when(!pictured, |i| i.size(px(128.))).object_fit(gpui::ObjectFit::Contain)))
             .child(div().mt(px(8.)).text_size(px(t::TEXT_SIZE)).font_weight(gpui::FontWeight::SEMIBOLD).text_center().child(e.name.clone()))
@@ -419,6 +424,6 @@ impl Browser {
             );
         }
         strip = strip.child(div().w(px((n - last) as f32 * TILE)).h(px(1.)).flex_none());
-        div().flex_1().min_h_0().flex().flex_col().child(preview).child(strip).into_any_element()
+        div().flex_1().min_h_0().pt(px(self.band_h())).flex().flex_col().child(preview).child(strip).into_any_element()
     }
 }

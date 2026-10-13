@@ -89,6 +89,8 @@ pub const ROW_RADIUS: f32 = 6.;
 pub const ROW_ICON: f32 = 16.;
 pub const INDENT: f32 = 18.;
 pub const HEADER_H: f32 = 28.;
+/// "Search: This PC | Folder", under the toolbar while searching.
+pub const SCOPE_BAR_H: f32 = 32.;
 pub const PATH_BAR_H: f32 = 26.;
 pub const STATUS_BAR_H: f32 = 26.;
 pub const INSPECTOR_W: f32 = 300.;
@@ -149,20 +151,21 @@ pub const CAPSULE_H: f32 = 36.;
 pub const CAPSULE_GAP: f32 = 10.;
 /// SF Symbols' point size in the toolbar.
 pub const TOOL_SYMBOL: f32 = 15.;
-pub fn glass() -> Rgba {
-    if dark() { rgba(0x3A3A3CEB) } else { rgba(0xFFFFFFEB) }
+/// The Liquid Glass material of toolbar controls.
+pub fn glass_style() -> gpui::GlassStyle {
+    gpui::GlassStyle { dark: dark(), ..Default::default() }
 }
+/// The veil under the toolbar once content scrolls beneath it: flat and
+/// milky over blurred content, as macOS draws it.
+pub fn scroll_edge() -> Hsla {
+    Hsla::from(content_bg()).opacity(0.45)
+}
+pub const SCROLL_EDGE_BLUR: f32 = 9.;
 pub fn glass_border() -> Rgba {
     if dark() { rgba(0xFFFFFF14) } else { rgba(0x0000000A) }
 }
 pub fn glass_pressed() -> Rgba {
     if dark() { rgba(0xFFFFFF1F) } else { rgba(0x00000012) }
-}
-pub fn glass_shadow() -> Vec<BoxShadow> {
-    vec![
-        BoxShadow { color: hsla(0., 0., 0., if dark() { 0.35 } else { 0.07 }), offset: point(px(0.), px(2.)), blur_radius: px(12.), spread_radius: px(0.), inset: false },
-        BoxShadow { color: hsla(0., 0., 0., 0.04), offset: point(px(0.), px(0.)), blur_radius: px(1.), spread_radius: px(0.), inset: false },
-    ]
 }
 /// A folder something is being dragged over.
 pub fn drop_target() -> Rgba {
